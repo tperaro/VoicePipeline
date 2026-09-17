@@ -216,3 +216,40 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---------------------------------------------------------------------------
+# VoicePipeline
+# ---------------------------------------------------------------------------
+# Applio (clonado pelo pipeline/00_setup.sh) e ambientes
+Applio/
+.venv/
+venv/
+
+# Dados de treino (recriados pelo pipeline: download -> separacao -> dataset)
+data/
+raw_audio/
+raw_video/
+separated/
+dataset/
+
+# Resultados de inferencia / testes de escuta
+recordings/
+previews/
+tts_tests/
+dataset_preview/
+
+# Artefatos de treino pesados (so os modelos finais em models/ vao pro git via LFS)
+*.wav
+*.mp3
+*.npy
+*.pth
+*.index
+events.out.tfevents.*
+!training/**/*.log
+*.local.log
+!models/**/*.pth
+!models/**/*.index
+
+# Local
+.env
+.env.*
