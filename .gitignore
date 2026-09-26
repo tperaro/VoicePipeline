@@ -1,0 +1,25 @@
+# Pesados / de terceiros (não versionar)
+Applio/
+dataset/
+dataset_preview/
+raw_audio/
+separated/
+tts_tests/
+
+# Gerados pelo app
+recordings/
+videos_finais/
+estado.json
+*.log
+
+# Mídia em qualquer lugar
+*.mp4
+*.mkv
+*.wav
+*.mp3
+*.part
+*.part.*
+
+# Python
+__pycache__/
+*.pyc
