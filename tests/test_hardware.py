@@ -55,7 +55,7 @@ class EndToEndTest(unittest.TestCase):
             t_rec = self.lap("1o frame (REC)", t0)
             time.sleep(1.0)
             self.assertIsNone(cap.early_failure(), procs.tail(take.path("ffmpeg.log")))
-            self.assertIsNone(capture.check_mic(cap.pid, index))
+            self.assertEqual(capture.mic_status(cap.pid, index), capture.MIC_OK)     # "desconhecido" tambem falha
             time.sleep(max(0.0, TAKE_S - (time.monotonic() - t_rec)))
             seq = cap.latest_frame()[0]                 # so a contagem; o frame nunca e olhado
             fps = cap.fps_measured()
@@ -126,8 +126,9 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(int(info["audio"]["sample_rate"]), 48000)
         self.lap("verificação extra", t)
         take.status = "renderizado"
-        take.saidas[modelo.key].update(mp3="silvio_IA.mp3", mp4=final)
+        take.saidas[modelo.key].update(mp3="silvio_IA.mp3", mp4=os.path.relpath(final, take.dir))   # como a GUI
         take.save()
+        self.assertTrue(os.path.isfile(os.path.join(take.dir, takes.Take.load(take.dir).saidas[modelo.key]["mp4"])))
 
         self.assertEqual(procs.run(["pgrep", "-af", self.root]).stdout, "")    # nenhum processo sobrou
         print(f"\n  [hw] preview {seq} frames a {fps and round(fps, 1)} fps; MKV {vi.n_frames} frames "
