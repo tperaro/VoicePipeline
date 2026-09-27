@@ -63,8 +63,8 @@ hora de gerar o vídeo. Calibre uma vez, e de novo se trocar de câmera ou de mi
 
 1. Se puder, deixe a câmera a 30 fps (veja "fps baixo" em "Solução de problemas") e acenda a luz.
 2. Grave uma tomada **com vídeo** de uns 15 s. Deixe as mãos inteiras no quadro e bata **pelo menos 5 palmas**
-   secas, com cerca de 1 s entre elas, parando as mãos por um instante depois de cada uma. Não fale durante a
-   tomada.
+   secas, com uns 2 s entre elas. Depois de cada palma, deixe as mãos juntas por um instante e só então afaste-as
+   **devagar**. Não fale durante a tomada.
 3. No terminal, na pasta do projeto (o app pode ficar aberto: ele não desfaz o valor salvo e lê o `av_offset_ms` na
    hora de gerar o vídeo):
 
@@ -86,13 +86,17 @@ hora de gerar o vídeo. Calibre uma vez, e de novo se trocar de câmera ou de mi
    Applio/.venv/bin/python calibrar_av.py recordings/AAAA-MM-DD_HHMMSS --salvar
    ```
 
-   Ele só grava quando vê pelo menos 5 palmas no vídeo.
-5. No app, clique **Gerar vídeo** numa tomada já convertida para conferir. O offset entra no render, sem converter de
-   novo.
+   Ele só grava com pelo menos 5 palmas vistas no vídeo e confiança alta ou média. Com confiança baixa, ele recusa
+   e não mexe no `estado.json`.
+5. Para conferir, grave uma tomada nova falando, converta e assista ao vídeo. O novo offset vale para os vídeos
+   gerados daqui em diante. Um vídeo antigo só muda se você clicar **Gerar vídeo** com a tomada dele aberta.
 
-- **Confiança baixa:** poucas palmas vistas, ou palmas discordando entre si (dispersão acima de 15 ms). Refaça
-  com mais luz, as mãos inteiras no quadro e palmas mais secas.
+- **Confiança baixa:** poucas palmas vistas, ou palmas discordando entre si (dispersão acima de 15 ms, ou menos de
+  80 % delas perto da mediana). Refaça com mais luz, as mãos inteiras no quadro e palmas mais secas, parando as mãos
+  depois de cada uma. Palmas muito juntas também são descartadas: deixe uns 2 s entre elas.
 - **Confiança média:** a câmera estava abaixo de 20 fps. O valor serve, mas a 30 fps a medida fica mais firme.
+- **Aviso de offset acima de 200 ms:** câmera e microfone USB costumam ficar abaixo disso. Confira as palmas na
+  tabela e, na dúvida, grave outra tomada. O aviso não muda a confiança: um atraso real desse tamanho pode ser salvo.
 - Para voltar ao padrão, ponha `"av_offset_ms": 0` no `estado.json`. Se o arquivo ficar com erro de sintaxe, o app
   avisa, usa os padrões e guarda o arquivo quebrado em `estado.json.corrompido`.
 - O script não altera a tomada. Depois de calibrar, ela pode ser apagada.
