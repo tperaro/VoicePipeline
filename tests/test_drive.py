@@ -62,6 +62,17 @@ class ParseFolderLinkTest(unittest.TestCase):
                 with self.assertRaises(drive.DriveError):
                     drive.parse_folder_link(link)
 
+    def test_not_a_string(self):
+        # estado.json editado a mao ("drive_pasta": 123) nao pode derrubar a GUI com AttributeError
+        for value in (123, 1.5, True, ["link"], {"id": FID}, FID.encode()):
+            with self.subTest(value=value):
+                with self.assertRaises(drive.DriveError) as cm:
+                    drive.parse_folder_link(value)
+                self.assertEqual(str(cm.exception), "O link da pasta do Drive tem que ser um texto")
+        with self.assertRaises(drive.DriveError) as cm:
+            drive.parse_folder_link(None)
+        self.assertEqual(str(cm.exception), "Cole o link da pasta do Drive")
+
 
 class RcloneBinTest(unittest.TestCase):
     def test_path_first_then_local_bin(self):

@@ -40,6 +40,8 @@ _HOSTS = {"drive.google.com", "docs.google.com"}
 
 
 def parse_folder_link(s: str) -> tuple[str, str | None]:
+    if s is not None and not isinstance(s, str):
+        raise DriveError("O link da pasta do Drive tem que ser um texto")    # ex.: "drive_pasta": 123
     s = (s or "").strip()
     if not s:
         raise DriveError("Cole o link da pasta do Drive")
