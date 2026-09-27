@@ -451,6 +451,23 @@ class PipelinePanelTest(unittest.TestCase):
         self.assertEqual("renderizado", saved.status)
         self.assertEqual(saved.video, self.render.calls[0].take.video)
         self.assertIn(f"Áudio alinhado da tomada {take.id} preparado", self.log_text(app))
+        self.assertNotIn("buraco", self.log_text(app))
+
+    def test_recovered_take_with_gaps_warns(self):
+        # buraco no audio (spec 6.3.3): o alinhamento usa o modo assincrono e o log avisa
+        take = self.make_take(with_audio=False)
+
+        def extract_with_gaps(raw, out):
+            vi, fit = timeline.extract_aligned_audio(raw, out)
+            fit.gaps = 3
+            return vi, fit
+
+        app = self.make_app(extract_aligned_audio=extract_with_gaps)
+        app.pipeline_panel.btn_convert.invoke()
+        self.wait_done(app)
+        self.assertEqual(3, Take.load(take.dir).audio_fit["gaps"])
+        self.assertIn(f"AVISO: o áudio da tomada {take.id} teve 3 buraco(s) acima de 30 ms; o alinhamento usou o "
+                      "modo assíncrono — confira a sincronia", self.log_text(app))
 
     def test_boost_then_convert_uses_boosted(self):
         take = self.make_take(modo="audio")

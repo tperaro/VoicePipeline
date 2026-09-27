@@ -18,6 +18,7 @@ from typing import Callable
 from studio import audio, drive, procs, render, timeline
 from studio.config import VIDEOS_DIR, Modelo, load_estado
 from studio.events import Event, error_message
+from studio.gui_capture import gaps_warning
 from studio.takes import Take
 
 JOB_EXTRACT = "pipeline_extract"      # fila io (curto)
@@ -460,6 +461,9 @@ class PipelinePanel:
         if not self._commit(take, section, video=asdict(vi), audio_fit=asdict(fit)):
             return
         self.app.log(f"Áudio alinhado da tomada {take.id} preparado")
+        warn = gaps_warning(take)
+        if warn:
+            self.app.log(warn)
         if ctx["then"] == JOB_BOOST:
             self._start_boost(take, ctx["modelo"], ctx["gain"])
         else:
