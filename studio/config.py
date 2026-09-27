@@ -99,20 +99,55 @@ def atomic_write_json(path: str, obj) -> None:
         raise
 
 
-def load_estado(path: str = ESTADO_PATH) -> tuple[dict, str | None]:
-    estado = dict(DEFAULT_ESTADO)
+MSG_ESTADO_CORROMPIDO = "estado.json corrompido — usando padrões"
+CORRUPT_SUFFIX = ".corrompido"
+
+
+def _read_estado(path: str) -> tuple[dict, bool]:
+    # (dados do arquivo, corrompido?); arquivo ausente = ({}, False)
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
-        return estado, None
+        return {}, False
     except (OSError, ValueError):
-        return estado, "estado.json corrompido — usando padrões"
-    if not isinstance(data, dict):
-        return estado, "estado.json corrompido — usando padrões"
+        return {}, True
+    return (data, False) if isinstance(data, dict) else ({}, True)
+
+
+def _with_defaults(data: dict) -> tuple[dict, str | None]:
+    # valor de tipo errado (ex.: "drive_pasta": 123) vira o padrao, com aviso; chaves desconhecidas ficam
+    estado = dict(DEFAULT_ESTADO)
     estado.update(data)
-    return estado, None
+    bad = [k for k, v in DEFAULT_ESTADO.items() if type(estado[k]) is not type(v)]
+    for k in bad:
+        estado[k] = DEFAULT_ESTADO[k]
+    if not bad:
+        return estado, None
+    return estado, f"estado.json: valor inválido em {', '.join(bad)} — usando o padrão"
+
+
+def load_estado(path: str = ESTADO_PATH) -> tuple[dict, str | None]:
+    data, corrupt = _read_estado(path)
+    if corrupt:
+        return dict(DEFAULT_ESTADO), MSG_ESTADO_CORROMPIDO
+    return _with_defaults(data)
 
 
 def save_estado(estado: dict, path: str = ESTADO_PATH) -> None:
     atomic_write_json(path, estado)
+
+
+def merge_estado(changes: dict, path: str = ESTADO_PATH) -> tuple[dict, str | None]:
+    # rele o arquivo e grava so as chaves de changes: o que outro programa gravou (calibrar_av.py,
+    # enviar_drive.py) nao volta atras; arquivo corrompido e guardado em <path>.corrompido antes
+    data, corrupt = _read_estado(path)
+    aviso = None
+    if corrupt:
+        backup = path + CORRUPT_SUFFIX
+        os.replace(path, backup)
+        aviso = f"estado.json corrompido — cópia guardada em {os.path.basename(backup)}"
+    estado, aviso_tipos = _with_defaults(data)
+    estado.update(changes)
+    save_estado(estado, path)
+    return estado, aviso or aviso_tipos

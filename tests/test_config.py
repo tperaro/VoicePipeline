@@ -205,5 +205,64 @@ class CheckpointEscapeTest(unittest.TestCase):
                 self.assertEqual(config.find_latest_checkpoint(key, logs), best)
 
 
+class EstadoRobustoTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.path = os.path.join(self.dir, "estado.json")
+
+    def write(self, obj):
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(obj, f)
+
+    def test_wrong_types_become_defaults(self):
+        self.write({"mic": "alsa_input.usb", "camera": None, "gravar_video": 1, "drive_pasta": 123,
+                    "av_offset_ms": True, "modelo": "silvio", "futuro": [1]})
+        estado, aviso = config.load_estado(self.path)
+        self.assertEqual(estado, dict(config.DEFAULT_ESTADO, mic="alsa_input.usb", modelo="silvio", futuro=[1]))
+        self.assertEqual(aviso, "estado.json: valor inválido em camera, gravar_video, drive_pasta, av_offset_ms "
+                                "— usando o padrão")
+
+    def test_merge_keeps_values_written_by_others(self):
+        # o app abriu com av_offset_ms 0; o calibrar_av.py gravou 40 por fora; o app muda so o mic
+        config.save_estado(dict(config.DEFAULT_ESTADO, av_offset_ms=40, drive_pasta="LINK"), self.path)
+        estado, aviso = config.merge_estado({"mic": "novo"}, self.path)
+        self.assertIsNone(aviso)
+        self.assertEqual(estado, dict(config.DEFAULT_ESTADO, av_offset_ms=40, drive_pasta="LINK", mic="novo"))
+        self.assertEqual(config.load_estado(self.path), (estado, None))
+
+    def test_merge_without_file(self):
+        estado, aviso = config.merge_estado({"modelo": "silvio"}, self.path)
+        self.assertEqual((estado, aviso), (dict(config.DEFAULT_ESTADO, modelo="silvio"), None))
+        self.assertEqual(os.listdir(self.dir), ["estado.json"])
+
+    def test_merge_keeps_copy_of_corrupt_file(self):
+        broken = '{"drive_pasta": "LINK", "av_offset_ms": 40,}'     # virgula sobrando (edicao a mao)
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write(broken)
+        estado, aviso = config.merge_estado({"mic": "novo"}, self.path)
+        self.assertEqual(aviso, "estado.json corrompido — cópia guardada em estado.json.corrompido")
+        self.assertEqual(estado, dict(config.DEFAULT_ESTADO, mic="novo"))
+        with open(self.path + ".corrompido", encoding="utf-8") as f:
+            self.assertEqual(f.read(), broken)
+        self.assertEqual(config.load_estado(self.path), (estado, None))
+
+    def test_merge_fixes_wrong_types(self):
+        self.write({"drive_pasta": 123, "av_offset_ms": 40})
+        estado, aviso = config.merge_estado({"mic": "novo"}, self.path)
+        self.assertEqual(aviso, "estado.json: valor inválido em drive_pasta — usando o padrão")
+        self.assertEqual(estado, dict(config.DEFAULT_ESTADO, av_offset_ms=40, mic="novo"))
+        self.assertEqual(config.load_estado(self.path), (estado, None))
+
+    def test_merge_failure_keeps_file(self):
+        config.save_estado(dict(config.DEFAULT_ESTADO, av_offset_ms=40), self.path)
+        with mock.patch("studio.config.os.replace", side_effect=OSError(28, "No space left on device")):
+            with self.assertRaises(OSError):
+                config.merge_estado({"mic": "novo"}, self.path)
+        self.assertEqual(config.load_estado(self.path), (dict(config.DEFAULT_ESTADO, av_offset_ms=40), None))
+        self.assertEqual(os.listdir(self.dir), ["estado.json"])
+
+
 if __name__ == "__main__":
     unittest.main()
