@@ -174,7 +174,35 @@ class GuiShellTest(unittest.TestCase):
         app = self.make_app()
         app.estado_path = os.path.join(self.tmp.name, "nao", "existe", "estado.json")
         app.update_estado(mic="x")
-        self.assertIn("Não foi possível salvar estado.json", self.log_text(app))
+        self.assertIn("Não foi possível salvar estado.json: Erro ao acessar o disco", self.log_text(app))
+        self.assertEqual("x", app.estado["mic"])            # a escolha vale nesta sessao mesmo sem salvar
+
+    def test_estado_written_outside_is_not_undone(self):
+        # calibrar_av.py --salvar ou enviar_drive.py --pasta com o app aberto: o app grava so o que mudou
+        with open(self.estado_path, "w", encoding="utf-8") as f:
+            json.dump({"av_offset_ms": 0}, f)
+        app = self.make_app()
+        link = "https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUv"
+        with open(self.estado_path, "w", encoding="utf-8") as f:
+            json.dump({"av_offset_ms": 40, "drive_pasta": link}, f)
+        app.model_var.set("Silvio Santos")
+        app.model_box.event_generate("<<ComboboxSelected>>")
+        with open(self.estado_path, encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertEqual((40, link, "silvio"), (saved["av_offset_ms"], saved["drive_pasta"], saved["modelo"]))
+        self.assertEqual((40, link), (app.estado["av_offset_ms"], app.estado["drive_pasta"]))
+
+    def test_corrupted_estado_is_kept_before_first_save(self):
+        broken = '{"drive_pasta": "https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUv",}'
+        with open(self.estado_path, "w", encoding="utf-8") as f:
+            f.write(broken)                                  # virgula sobrando: JSON invalido
+        app = self.make_app()
+        app.update_estado(mic="alsa_input.usb-teste")
+        with open(self.estado_path + ".corrompido", encoding="utf-8") as f:
+            self.assertEqual(broken, f.read())               # o link continua la para recuperar a mao
+        with open(self.estado_path, encoding="utf-8") as f:
+            self.assertEqual("alsa_input.usb-teste", json.load(f)["mic"])
+        self.assertIn("AVISO: estado.json corrompido — cópia guardada em estado.json.corrompido", self.log_text(app))
 
     # ---------- modelo ----------
 
@@ -290,6 +318,17 @@ class GuiShellTest(unittest.TestCase):
         app = self.make_app()
         self.assertIsNone(app.take)
         self.assertIn("Pasta de gravações", self.log_text(app))
+
+    def test_startup_skips_failed_take(self):
+        # a tomada que falhou ao comecar (camera em uso, duplo clique) nao esconde a boa anterior
+        write_audio_take(self.rec_dir, "2026-09-26_100000", "convertido")
+        failed = Take(id="2026-09-26_110000", dir=os.path.join(self.rec_dir, "2026-09-26_110000"), modo="av",
+                      status="falhou", mic="mic", erro="Câmera em uso por outro programa (Meet/Zoom/OBS?)")
+        os.makedirs(failed.dir)
+        failed.save()                                        # sem raw.mkv
+        app = self.make_app()
+        self.assertEqual("2026-09-26_100000", app.take.id)
+        self.assertIn("Última tomada: 2026-09-26_100000 (convertido)", self.log_text(app))
 
     # ---------- conversor ----------
 

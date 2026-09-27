@@ -10,8 +10,9 @@ import traceback
 from datetime import datetime
 from tkinter import messagebox, ttk
 
+from studio import procs
 from studio.config import (ESTADO_PATH, LOGS_DIR, MODELOS, REC_DIR, STUDIO_LOG, Modelo, find_latest_checkpoint,
-                           get_modelo, load_estado, save_estado)
+                           get_modelo, load_estado, merge_estado)
 from studio.events import Event, EventBus, JobRunner, error_message
 from studio.rvc_client import RvcClient
 from studio.takes import Take, latest_take, recover_takes
@@ -207,11 +208,16 @@ class App:
     # ---------- estado, modelo e tomada ----------
 
     def update_estado(self, **changes) -> None:
-        self.estado.update(changes)
+        # rele o arquivo e grava so estas chaves: o que outro programa gravou com o app aberto (calibrar_av.py
+        # --salvar, enviar_drive.py --pasta) nao volta atras; o corrompido vira estado.json.corrompido
         try:
-            save_estado(self.estado, self.estado_path)
+            self.estado, aviso = merge_estado(changes, self.estado_path)
         except OSError as e:
-            self.log(f"Não foi possível salvar estado.json: {error_message(e)}")
+            self.estado.update(changes)
+            self.log(f"Não foi possível salvar estado.json: {procs.os_error_message(e)}")
+            return
+        if aviso:
+            self.log(f"AVISO: {aviso}")
 
     def _initial_model(self) -> Modelo:
         try:
@@ -250,7 +256,8 @@ class App:
         try:
             for msg in recover_takes(self.rec_dir):
                 self.log(msg)
-            take = latest_take(self.rec_dir)
+            # a que falhou ao comecar (camera em uso, duplo clique) nao esconde a ultima boa
+            take = latest_take(self.rec_dir, usable_only=True)
         except Exception as e:
             self.report_error(e, "abertura")
             return
