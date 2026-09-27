@@ -30,6 +30,7 @@ LOG_NAME = "render.log"
 CANCEL_MSG = "Render cancelado"
 MIN_FRAMES = 2                              # o video comeca no 2o frame (ancora): 1 frame so nao e video
 MSG_SHORT = "Gravação curta demais para gerar o vídeo"
+DISK_FULL_HINT = "No space left on device"  # o ffmpeg escreve o strerror do ENOSPC no render.log
 POLL_S = 0.1
 STOP_WAIT_S = 5.0
 DECODE_TIMEOUT_S = 60.0
@@ -245,6 +246,8 @@ def _encode(take: Take, conv_wav: str, wm: str, part: str, n_frames: int, modelo
         if rc == 0:
             return
         _remove(part)
+        if DISK_FULL_HINT in procs.tail(log, 20):
+            raise RenderError(procs.MSG_DISK_FULL)    # o x264 falharia igual: nao tenta de novo
     last = next((ln.strip() for ln in reversed(procs.tail(log, 5).splitlines()) if ln.strip()), "")
     raise RenderError(f"Falha ao gerar o vídeo (código {rc})" + (f": {last}" if last else ""))
 
@@ -284,6 +287,19 @@ def _check_png(wm: str, w: int, h: int) -> None:
 def render_final(take: Take, modelo: Modelo, conv_wav: str, av_offset_ms: int = 0,
                  videos_dir: str = VIDEOS_DIR, cancel: threading.Event | None = None) -> str:
     # nao mexe no take.json (so a thread principal da GUI grava); devolve o caminho final
+    try:
+        return _render_final(take, modelo, conv_wav, av_offset_ms, videos_dir, cancel)
+    except OSError as e:
+        # disco cheio (ou outro erro de arquivo) no meio do caminho: mensagem PT e nenhum .part sobrando
+        try:
+            _remove(take.path(PART_NAME))
+        except OSError:
+            pass
+        raise RenderError(procs.os_error_message(e)) from None
+
+
+def _render_final(take: Take, modelo: Modelo, conv_wav: str, av_offset_ms: int, videos_dir: str,
+                  cancel: threading.Event | None) -> str:
     try:
         metadata_tags(modelo)
     except ValueError:

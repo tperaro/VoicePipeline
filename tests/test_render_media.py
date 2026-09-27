@@ -1,4 +1,5 @@
 import dataclasses
+import errno
 import os
 import signal
 import subprocess
@@ -275,6 +276,61 @@ class RenderFinalTest(unittest.TestCase):
                 self.render("timeout")
         self.assertEqual(str(cm.exception), "O render demorou demais e foi interrompido")
         self.assert_nothing_published("timeout")
+
+    # --- disco cheio e outros erros de arquivo: RenderError em PT e nenhum .part sobrando ---
+
+    def assert_no_part_files(self) -> None:
+        self.assertEqual([n for n in os.listdir(self.take.dir) if n.endswith(".part") or ".part." in n], [])
+
+    def test_disk_full_writing_watermark(self):
+        # a marca do Orochi ainda nao existe nesta tomada: o PNG e gravado agora e o disco enche no meio
+        def full_disk_save(img, fp, *args, **kwargs):
+            with open(fp, "wb") as f:
+                f.write(b"\x89PNG metade")
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        orochi = get_modelo("orochi")
+        with mock.patch.object(watermark.Image.Image, "save", full_disk_save):
+            with self.assertRaises(RenderError) as cm:
+                render.render_final(self.take, orochi, self.short, videos_dir=self.videos("cheio_png"))
+        self.assertEqual(str(cm.exception), "Disco cheio — libere espaço")
+        self.assertFalse(os.path.exists(self.take.path("wm_640x360_orochi.png")))
+        self.assert_no_part_files()
+        self.assert_nothing_published("cheio_png")
+
+    def test_disk_full_in_ffmpeg_does_not_retry(self):
+        cmd = ["sh", "-c", "echo 'Error writing trailer of render.part.mp4: No space left on device' >&2; exit 1"]
+        with mock.patch.object(render, "build_render_cmd", return_value=cmd) as build:
+            with self.assertRaises(RenderError) as cm:
+                self.render("cheio_ffmpeg")
+        self.assertEqual(str(cm.exception), "Disco cheio — libere espaço")
+        self.assertEqual(build.call_count, 1)          # com o disco cheio o x264 falharia igual
+        self.assert_no_part_files()
+        self.assert_nothing_published("cheio_ffmpeg")
+
+    def test_disk_full_publishing(self):
+        real_replace = os.replace
+        final_dir = self.videos("cheio_final")
+
+        def replace(src, dst, *args, **kwargs):
+            if os.path.dirname(dst) == final_dir:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real_replace(src, dst, *args, **kwargs)
+
+        with mock.patch.object(render.os, "replace", replace):
+            with self.assertRaises(RenderError) as cm:
+                self.render("cheio_final")
+        self.assertEqual(str(cm.exception), "Disco cheio — libere espaço")
+        self.assert_no_part_files()
+        self.assert_nothing_published("cheio_final")
+
+    def test_other_os_error_is_render_error(self):
+        denied = PermissionError(errno.EACCES, "Permission denied", self.videos("sem_permissao"))
+        with mock.patch.object(render.os, "makedirs", side_effect=denied):
+            with self.assertRaises(RenderError) as cm:
+                self.render("sem_permissao")
+        self.assertEqual(str(cm.exception), "Erro ao acessar o disco (videos_sem_permissao): Permission denied")
+        self.assert_no_part_files()
 
 
 class ShortTakeTest(unittest.TestCase):
