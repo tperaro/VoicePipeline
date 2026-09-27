@@ -137,7 +137,8 @@ class RenderFinalTest(unittest.TestCase):
 
     def test_verify_flags_video_without_watermark(self):
         out = os.path.join(self.tmp.name, "sem_marca.mp4")
-        cmd = render.build_render_cmd(self.take.raw_path, self.short, self.wm, out, self.n, SILVIO, encoder="x264")
+        cmd = render.build_render_cmd(self.take.raw_path, self.short, self.wm, out, self.n,
+                                      self.take.video["ancora_pts"], SILVIO, encoder="x264")
         i = cmd.index("-filter_complex") + 1
         cmd[i] = without_overlay(cmd[i])
         subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=120)
@@ -183,7 +184,7 @@ class RenderFinalTest(unittest.TestCase):
         self.addCleanup(lambda: os.path.exists(self.take.path("render.part.mp4"))
                         and os.remove(self.take.path("render.part.mp4")))
         real = render.build_filter
-        with mock.patch.object(render, "build_filter", lambda n, off=0: without_overlay(real(n, off))):
+        with mock.patch.object(render, "build_filter", lambda n, anc, off=0: without_overlay(real(n, anc, off))):
             with self.assertRaises(RenderError) as cm:
                 self.render("falha_verif")
         self.assertIn("Texto da marca d'água", str(cm.exception))
@@ -331,6 +332,43 @@ class RenderFinalTest(unittest.TestCase):
                 self.render("sem_permissao")
         self.assertEqual(str(cm.exception), "Erro ao acessar o disco (videos_sem_permissao): Permission denied")
         self.assert_no_part_files()
+
+
+class AnchorPtsTest(unittest.TestCase):
+    # camera a 15 fps (cada pacote vira 2 frames no MP4) e o 1o pacote as vezes nao decodifica: o video tem de
+    # comecar no pacote da ancora (2o pacote, pelo pts), o mesmo relogio do audio.wav e da calibracao
+    FLASH_PACKET = 30
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def render_case(self, name: str, stub: bool, video_start_s: float):
+        take = new_take("av", mic="fake", rec_dir=os.path.join(self.tmp.name, name))
+        helpers.make_mjpeg_take(take.raw_path, fps=15, flash_packet=self.FLASH_PACKET, video_start_s=video_start_s,
+                                stub_first_packet=stub)
+        vi, fit = timeline.extract_aligned_audio(take.raw_path, take.audio_path)
+        take.video, take.audio_fit = dataclasses.asdict(vi), dataclasses.asdict(fit)
+        conv = fake_converted(take.audio_path, take.path("silvio.wav"), -60)
+        mp4 = render.render_final(take, SILVIO, conv, videos_dir=os.path.join(self.tmp.name, f"videos_{name}"))
+        return take, vi, mp4
+
+    def test_video_starts_at_anchor_packet(self):
+        for stub in (False, True):
+            for start in (0.0, 1.0):
+                with self.subTest(pacote0_ruim=stub, video_start_s=start):
+                    take, vi, mp4 = self.render_case(f"stub{int(stub)}_start{start:g}", stub, start)
+                    pk = timeline.read_packets(take.raw_path, "v")
+                    self.assertEqual(vi.ancora_pts, pk[1][0])
+                    flash = helpers.flash_frame_index(mp4)
+                    # pacote 1 (ancora) = frames 0 e 1 do MP4; o flash do pacote 30 cai nos frames 58 e 59
+                    self.assertEqual(flash // 2, self.FLASH_PACKET - 1)
+                    self.assertAlmostEqual(helpers.beep_onset_s(mp4), (flash // 2) * 2 / FPS, delta=0.002)
+                    self.assertEqual(render.verify_render(mp4, vi.n_frames, take.path("wm_640x360_silvio.png")), [])
 
 
 class ShortTakeTest(unittest.TestCase):

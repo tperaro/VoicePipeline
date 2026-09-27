@@ -104,5 +104,46 @@ class SyntheticTakeTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "x.mkv")))
 
 
+class MjpegTakeTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        d = cls.tmp.name
+        cls.good = helpers.make_mjpeg_take(os.path.join(d, "bom.mkv"), video_start_s=1.0)
+        cls.bad = helpers.make_mjpeg_take(os.path.join(d, "ruim.mkv"), video_start_s=1.0, stub_first_packet=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def decoded_frames(self, path):
+        r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-map", "0:v", "-f", "framemd5", "-"],
+                           capture_output=True, text=True)
+        return len([ln for ln in r.stdout.splitlines() if ln and not ln.startswith("#")])
+
+    def test_layout_like_recorder_at_15fps(self):
+        for path in (self.good, self.bad):
+            info = helpers.ffprobe_streams(path)
+            v, a = stream(info, "video"), stream(info, "audio")
+            self.assertEqual((v["codec_name"], v["width"], v["height"], v["pix_fmt"]),
+                             ("mjpeg", 640, 360, "yuvj422p"))
+            self.assertEqual((a["codec_name"], a["sample_rate"], a["channels"]), ("pcm_s16le", "48000", 1))
+            self.assertAlmostEqual(float(v["start_time"]), 1.0, places=3)
+            self.assertAlmostEqual(float(a["start_time"]), 0.0, places=3)
+            pts = video_pts(path)
+            self.assertEqual(len(pts), 60)
+            self.assertAlmostEqual(pts[1] - pts[0], 1 / 15, delta=0.001)
+
+    def test_stub_first_packet_is_not_decoded(self):
+        self.assertEqual(self.decoded_frames(self.good), 60)
+        self.assertEqual(self.decoded_frames(self.bad), 59)     # so o pacote 0 some; o pts dele fica no MKV
+        self.assertEqual(video_pts(self.bad), video_pts(self.good))
+
+    def test_beep_on_flash_packet(self):
+        flash_t = video_pts(self.good)[helpers.flash_frame_index(self.good)]
+        self.assertAlmostEqual(flash_t, 1.0 + 30 / 15, delta=0.001)
+        self.assertAlmostEqual(helpers.beep_onset_s(self.good), flash_t, delta=0.001)     # audio comeca em 0
+
+
 if __name__ == "__main__":
     unittest.main()

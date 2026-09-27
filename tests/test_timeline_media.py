@@ -140,7 +140,7 @@ class ExtractAlignedAudioTest(unittest.TestCase):
         return out, vi, fit
 
     def assert_beep_on_flash(self, raw):
-        # t=0 do WAV = ancora (2o pacote de video), igual ao render (trim=start_frame=1)
+        # t=0 do WAV = ancora (2o pacote de video), igual ao render (trim pelo pts da ancora)
         out, vi, fit = self.extract(raw)
         expected = flash_pts(raw) - vi.ancora_pts
         self.assertAlmostEqual(helpers.beep_onset_s(out), expected, delta=0.001)
