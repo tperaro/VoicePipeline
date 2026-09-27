@@ -717,6 +717,19 @@ class PipelinePanelTest(unittest.TestCase):
         for b in busy_while_recording:
             self.assertEqual("normal", state(b), b.cget("text"))
 
+    def test_recording_stops_playback(self):
+        # um som tocando (ex.: "Ouvir resultado") entraria no microfone da gravacao nova: a gravacao para o som
+        take = self.make_take()
+        self.converted(take, mp4=True)
+        app = self.make_app()
+        p = app.pipeline_panel
+        p.btn_play_out.invoke()
+        player = self.spawned[-1]
+        self.assertFalse(player.terminated)
+        app.bus.post("recording", active=True, take=None)
+        app.dispatch_events()
+        self.assertTrue(player.terminated)
+
     def test_take_changed_updates_status_and_buttons(self):
         av = self.make_take()
         self.converted(av, mp4=True)

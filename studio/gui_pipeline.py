@@ -380,6 +380,8 @@ class PipelinePanel:
 
     def _on_recording(self, ev: Event) -> None:
         self.recording = bool(ev.data.get("active"))
+        if self.recording:
+            self._stop_player()               # um som tocando entraria no microfone da gravacao nova
         self.refresh()
 
     def _on_progress(self, ev: Event) -> None:
