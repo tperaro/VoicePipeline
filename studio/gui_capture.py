@@ -14,7 +14,7 @@ from typing import Callable
 
 from PIL import Image, ImageDraw, ImageTk
 
-from studio import audio, capture, devices, timeline
+from studio import audio, capture, devices, procs, timeline
 from studio.capture import (ACCEPTED_RC, MIN_FPS, PREVIEW_H, PREVIEW_W, CaptureProcess, Watchdog, build_audio_cmd,
                             build_av_cmd, build_preview_cmd, verify_capture)
 from studio.config import MAX_TAKE_S, Modelo
@@ -113,9 +113,14 @@ def finish_capture(raw: str, need_video: bool, audio_out: str) -> dict:
     erro = verify_capture(raw, need_video)
     if erro:
         return {"erro": erro}
-    out = {"erro": None, "video": {}, "audio_fit": {}}
+    out = {"erro": None, "video": {}, "audio_fit": {}, "volume": (None, None), "alinhamento": None}
     if need_video:
-        vi, fit = timeline.extract_aligned_audio(raw, audio_out)
+        try:
+            vi, fit = timeline.extract_aligned_audio(raw, audio_out)
+        except Exception as e:
+            # a gravacao passou na verificacao e continua valendo ("gravado"); o Converter extrai o audio.wav de novo
+            out["alinhamento"] = procs.os_error_message(e) if isinstance(e, OSError) else error_message(e)
+            return out
         out["video"], out["audio_fit"] = asdict(vi), asdict(fit)
     out["volume"] = audio.volumedetect(audio_out)
     return out
@@ -603,6 +608,9 @@ class CapturePanel:
         self.app.log(f"Gravação concluída: {take.id} ({_dec(self._rec_elapsed)} s{extra})")
         if self._failure:
             self.app.log("AVISO: a gravação parou antes da hora; o que foi gravado até ali foi mantido")
+        if res.get("alinhamento"):
+            self.app.log(f"AVISO: o áudio da tomada não foi alinhado agora ({res['alinhamento']}); a gravação foi "
+                         "mantida e o áudio é preparado de novo ao converter")
         if fps and fps < MIN_FPS:
             self.app.log(f"AVISO: a câmera gravou a {_dec(fps)} fps (abaixo de {MIN_FPS:g}) — pouca luz?")
         warn = gaps_warning(take)

@@ -1,4 +1,5 @@
 import dataclasses
+import errno
 import gc
 import itertools
 import json
@@ -16,10 +17,10 @@ import numpy as np
 import soundfile as sf
 from PIL import ImageTk
 
-from studio import capture, gui, gui_capture
+from studio import capture, gui, gui_capture, procs
 from studio.config import get_modelo
 from studio.devices import Source
-from studio.takes import Take, list_takes
+from studio.takes import Take, latest_take, list_takes
 from tests import helpers
 
 HAS_DISPLAY = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
@@ -143,6 +144,23 @@ class HelpersTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             res = gui_capture.finish_capture(os.path.join(d, "raw.mkv"), True, os.path.join(d, "audio.wav"))
         self.assertEqual({"erro": "Gravação não encontrada: raw.mkv"}, res)
+
+    def test_finish_capture_keeps_recording_when_alignment_fails(self):
+        # a gravacao passou na verificacao e so o alinhamento falhou (ex.: disco cheio): ela continua valendo
+        cases = [(procs.ProcError("Não foi possível extrair o áudio alinhado", 1, "No space left on device"),
+                  "Não foi possível extrair o áudio alinhado"),
+                 (OSError(errno.ENOSPC, "No space left on device"), "Disco cheio — libere espaço")]
+        with tempfile.TemporaryDirectory() as d:
+            raw = helpers.make_synthetic_take(os.path.join(d, "raw.mkv"), duration_s=2.0, flash_frame=30,
+                                              size="320x240")
+            audio_out = os.path.join(d, "audio.wav")
+            for exc, msg in cases:
+                with self.subTest(msg), \
+                        mock.patch.object(gui_capture.timeline, "extract_aligned_audio", side_effect=exc):
+                    res = gui_capture.finish_capture(raw, True, audio_out)
+                    self.assertEqual({"erro": None, "video": {}, "audio_fit": {}, "volume": (None, None),
+                                      "alinhamento": msg}, res)
+                    self.assertFalse(os.path.exists(audio_out))
 
 
 @unittest.skipUnless(HAS_DISPLAY, "sem display")
@@ -428,6 +446,31 @@ class CapturePanelTest(unittest.TestCase):
         self.assertEqual("readonly", str(p.mic_box.cget("state")))
         # camera continua marcada: o preview volta
         self.assertTrue(pump_until(app, lambda: len(self.caps) == 3 and p.preview is self.caps[2]))
+
+    def test_alignment_failure_keeps_take_gravado(self):
+        # verify_capture passou e so o alinhamento falhou: a tomada fica "gravado" (o raw.mkv bom continua
+        # alcancavel na proxima abertura) e o Converter prepara o audio.wav de novo
+        app = self.make_app()
+        p = app.capture_panel
+        full = OSError(errno.ENOSPC, "No space left on device")
+        with mock.patch.object(gui_capture.timeline, "extract_aligned_audio", side_effect=full):
+            take, rec = self.start_recording(app)
+            rec.push(RED)
+            self.assertTrue(pump_until(app, lambda: str(p.btn_record.cget("state")) == "normal"))
+            p.btn_record.invoke()
+            self.wait_idle(app)
+        self.assertIs(take, app.take)
+        self.assertEqual(("gravado", ""), (app.take.status, app.take.erro))
+        saved = Take.load(take.dir)
+        self.assertEqual(("gravado", {}, {}), (saved.status, saved.video, saved.audio_fit))
+        self.assertTrue(os.path.isfile(take.raw_path))
+        self.assertFalse(os.path.exists(take.audio_path))
+        self.assertEqual(take.id, latest_take(self.rec_dir, usable_only=True).id)
+        log = self.log_text(app)
+        self.assertIn(f"Gravação concluída: {take.id}", log)
+        self.assertIn("AVISO: o áudio da tomada não foi alinhado agora (Disco cheio — libere espaço)", log)
+        self.assertNotIn("ERRO na gravação", log)
+        self.assertEqual(f"Gravado: {take.id}", p.status_label.cget("text"))
 
     def test_audio_only(self):
         app = self.make_app({"gravar_video": False})
