@@ -15,6 +15,7 @@ from studio.config import (ESTADO_PATH, LOGS_DIR, MODELOS, REC_DIR, STUDIO_LOG, 
                            get_modelo, load_estado, merge_estado)
 from studio.events import Event, EventBus, JobRunner, error_message
 from studio.gui_capture import CAPTURE_JOB_LABELS, CapturePanel
+from studio.gui_pipeline import PIPELINE_JOB_LABELS, PipelinePanel
 from studio.rvc_client import RvcClient
 from studio.takes import Take, latest_take, recover_takes
 
@@ -25,7 +26,7 @@ LEFT_MIN_W = 500          # preview 480x270 + margens
 PUMP_MS = 50
 JOB_LOAD_MODEL = "load_model"
 # texto PT de cada job na confirmacao ao fechar (as outras tasks acrescentam os seus)
-JOB_LABELS = {JOB_LOAD_MODEL: "Carregando o modelo", **CAPTURE_JOB_LABELS}
+JOB_LABELS = {JOB_LOAD_MODEL: "Carregando o modelo", **CAPTURE_JOB_LABELS, **PIPELINE_JOB_LABELS}
 RUNNER_LABELS = {"gpu": "modelo, conversão ou vídeo", "io": "arquivos", "upload": "envio para o Drive"}
 COLOR_BAD, COLOR_BUSY, COLOR_OK = "#a33", "#a80", "#2a2"
 
@@ -33,7 +34,7 @@ COLOR_BAD, COLOR_BUSY, COLOR_OK = "#a33", "#a80", "#2a2"
 class App:
     def __init__(self, root: tk.Tk, rvc_factory=RvcClient, rec_dir: str = REC_DIR,
                  estado_path: str = ESTADO_PATH, log_path: str = STUDIO_LOG, logs_dir: str = LOGS_DIR,
-                 ask_confirm=None, capture_factory=None, hardware=None):
+                 ask_confirm=None, capture_factory=None, hardware=None, pipeline_deps=None):
         self.root = root
         self.rec_dir = rec_dir
         self.estado_path = estado_path
@@ -44,6 +45,8 @@ class App:
         # fabrica do CaptureProcess e acesso ao hardware (None = os de verdade); os testes injetam falsos
         self.capture_factory = capture_factory
         self.hardware = hardware
+        # o que o painel de conversao/video/Drive chama fora do processo (None = os de verdade)
+        self.pipeline_deps = pipeline_deps
         self.rvc = None
         self._rvc_started = False
         self.model_loaded = False
@@ -80,6 +83,7 @@ class App:
         self._build_model_section()
         # os paineis das outras tasks entram aqui, antes da abertura (assim recebem o take_changed inicial)
         self.capture_panel = CapturePanel(self, self.left)
+        self.pipeline_panel = PipelinePanel(self, self.right)
         self._startup(aviso_estado)
         self._pump_id = root.after(PUMP_MS, self._pump)
 
@@ -90,7 +94,8 @@ class App:
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(0, weight=0, minsize=LEFT_MIN_W)
         outer.columnconfigure(1, weight=1)
-        outer.rowconfigure(0, weight=1)
+        # o log absorve a sobra e o aperto: as colunas de controles ficam sempre inteiras
+        outer.rowconfigure(1, weight=1)
         self.left = ttk.Frame(outer)
         self.left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         self.right = ttk.Frame(outer)
