@@ -6,7 +6,7 @@ import os
 import sys
 
 from studio import drive
-from studio.config import ESTADO_PATH, RCLONE_REMOTE, REC_DIR, VIDEOS_DIR, load_estado, save_estado
+from studio.config import ESTADO_PATH, RCLONE_REMOTE, REC_DIR, VIDEOS_DIR, load_estado, merge_estado
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,8 +53,10 @@ def run(args) -> int:
         except drive.DriveError as e:
             print(f"Link inválido: {e}", file=sys.stderr)
             return 2
-        estado["drive_pasta"] = args.pasta.strip()
-        save_estado(estado, args.estado)
+        # grava so a pasta, relendo o arquivo; um estado.json corrompido fica guardado em .corrompido
+        estado, aviso = merge_estado({"drive_pasta": args.pasta.strip()}, args.estado)
+        if aviso:
+            print(aviso, file=sys.stderr)
         print("Pasta do Drive salva em estado.json")
     link = str(estado.get("drive_pasta") or "").strip()
     if not link:

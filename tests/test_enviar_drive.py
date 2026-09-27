@@ -114,6 +114,18 @@ class EnviarDriveCliTest(unittest.TestCase):
         self.assertIn(f"{NAMES[0]}: FALHOU — {NAMES[0]}: fora de videos_finais/", r.stdout)
         self.assertEqual(self.remote_files(), [])
 
+    def test_pasta_keeps_copy_of_corrupt_estado(self):
+        broken = '{"mic": "alsa_input.usb", "av_offset_ms": 40,}'     # virgula sobrando (edicao a mao)
+        with open(self.estado, "w", encoding="utf-8") as f:
+            f.write(broken)
+        r = self.cli("--pasta", LINK, "--dry-run")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("estado.json corrompido — cópia guardada em estado.json.corrompido", r.stderr)
+        with open(self.estado + ".corrompido", encoding="utf-8") as f:
+            self.assertEqual(f.read(), broken)
+        with open(self.estado, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["drive_pasta"], LINK)
+
     def test_preflight_errors_exit_1(self):
         self.cli("--pasta", LINK, "--dry-run")
         env = {**self.env, "PATH": "/usr/bin:/bin", "HOME": self.tmp}
