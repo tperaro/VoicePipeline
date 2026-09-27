@@ -9,7 +9,7 @@ import unittest
 from studio.config import BASE_DIR
 from studio.drive import UploadLock
 from studio.takes import Take
-from tests.test_drive_upload import FID, LINK, NAMES, fake_env, make_mp4, md5
+from tests.test_drive_upload import FID, LINK, NAMES, fake_env, make_mp4, md5, read_calls
 
 ENVIAR = os.path.join(BASE_DIR, "enviar_drive.py")
 SYSTEM_PY = "/usr/bin/python3"
@@ -144,6 +144,55 @@ class EnviarDriveCliTest(unittest.TestCase):
         r = self.cli("--pasta", LINK)
         self.assertEqual(r.returncode, 0)
         self.assertIn("Nenhum vídeo para enviar", r.stdout)
+
+    def copied_names(self):
+        return {os.path.basename(c["argv"][1]) for c in read_calls(self.env) if c["argv"][0] == "copyto"}
+
+    def registra_enviado(self, take_id: str, model_key: str, md5_valor: str) -> None:
+        take_dir = os.path.join(self.rec, take_id)
+        os.makedirs(take_dir, exist_ok=True)
+        Take(id=take_id, dir=take_dir, modo="av", status="renderizado", mic="m",
+             saidas={model_key: {"enviado": {"md5": md5_valor, "quando": "2026-09-26T10:00:00"}}}).save()
+
+    def test_list_mode_skips_already_sent(self):
+        local_md5 = md5(os.path.join(self.videos, NAMES[0]))
+        self.registra_enviado("2026-09-26_101500", "silvio", local_md5)
+        r = self.cli("--pasta", LINK)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"{NAMES[0]}: pulado (já enviado antes)\n", r.stdout)
+        self.assertIn(f"{NAMES[1]}: enviado\n", r.stdout)
+        self.assertIn("Resumo: 1 enviado(s), 1 pulado(s), 0 falha(s)", r.stdout)
+        self.assertEqual(self.remote_files(), [NAMES[1]])   # rclone nunca chamado para o NAMES[0]
+        self.assertEqual(self.copied_names(), {NAMES[1]})
+
+    def test_list_mode_sends_when_md5_differs(self):
+        self.registra_enviado("2026-09-26_101500", "silvio", "0" * 32)
+        r = self.cli("--pasta", LINK)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"{NAMES[0]}: enviado\n", r.stdout)
+        self.assertIn("Resumo: 2 enviado(s), 0 pulado(s), 0 falha(s)", r.stdout)
+        self.assertEqual(self.remote_files(), sorted(NAMES))
+        self.assertEqual(self.copied_names(), set(NAMES))
+
+    def test_reenviar_forces_resend(self):
+        local_md5 = md5(os.path.join(self.videos, NAMES[0]))
+        self.registra_enviado("2026-09-26_101500", "silvio", local_md5)
+        r = self.cli("--pasta", LINK, "--reenviar")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"{NAMES[0]}: enviado\n", r.stdout)
+        self.assertIn("Resumo: 2 enviado(s), 0 pulado(s), 0 falha(s)", r.stdout)
+        self.assertEqual(self.remote_files(), sorted(NAMES))
+        self.assertEqual(self.copied_names(), set(NAMES))
+
+    def test_arquivo_sends_even_if_already_registered(self):
+        local_md5 = md5(os.path.join(self.videos, NAMES[0]))
+        self.registra_enviado("2026-09-26_101500", "silvio", local_md5)
+        r = self.cli("--pasta", LINK, "--arquivo", os.path.join(self.videos, NAMES[0]))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"{NAMES[0]}: enviado\n", r.stdout)
+        self.assertIn("Resumo: 1 enviado(s), 0 pulado(s), 0 falha(s)", r.stdout)
+        self.assertEqual(self.remote_files(), [NAMES[0]])
+        self.assertEqual(self.copied_names(), {NAMES[0]})
 
     def test_stdlib_only(self):
         r = subprocess.run([sys.executable, "-S", "-c", "import enviar_drive, studio.drive; print('ok')"],

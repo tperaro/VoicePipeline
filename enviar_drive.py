@@ -7,6 +7,7 @@ import sys
 
 from studio import drive
 from studio.config import ESTADO_PATH, RCLONE_REMOTE, REC_DIR, VIDEOS_DIR, load_estado, merge_estado
+from studio.takes import Take
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -14,12 +15,36 @@ def build_parser() -> argparse.ArgumentParser:
                                             "Nunca apaga nada no Drive; o que já está igual é pulado.")
     p.add_argument("--pasta", metavar="LINK", help="link da pasta do Drive (fica salvo em estado.json)")
     p.add_argument("--arquivo", metavar="CAMINHO", action="append",
-                   help="envia só este vídeo (pode repetir); sem ele, envia todos de videos_finais/")
+                   help="envia só este vídeo (pode repetir); sem ele, envia todos de videos_finais/ (respeitando "
+                        "o histórico de envio); sempre envia, mesmo que já registrado")
     p.add_argument("--dry-run", action="store_true", help="só mostra o que seria enviado, sem enviar")
+    p.add_argument("--reenviar", action="store_true",
+                   help="ignora o histórico de envio (take.json) e reenvia tudo de videos_finais/, mesmo o que "
+                        "já foi enviado antes")
     p.add_argument("--estado", default=ESTADO_PATH, help="caminho do estado.json (testes)")
     p.add_argument("--videos-dir", default=VIDEOS_DIR, help="pasta dos vídeos finais (testes)")
     p.add_argument("--rec-dir", default=REC_DIR, help="pasta das tomadas, para anotar o envio (testes)")
     return p
+
+
+def _ja_enviado(path: str, rec_dir: str) -> bool:
+    # decide so pelo historico local (take.json), nunca pelo que esta hoje na pasta do Drive: o dono da pasta
+    # pode ter movido, renomeado ou apagado o arquivo la sem que isso deva gerar reenvio nem duplicata
+    parts = drive.split_video_name(os.path.basename(path))
+    if parts is None:
+        return False
+    take_id, model_key = parts
+    try:
+        take = Take.load(os.path.join(rec_dir, take_id))
+    except (OSError, ValueError, TypeError):
+        return False
+    md5_registrado = ((take.saidas.get(model_key) or {}).get("enviado") or {}).get("md5")
+    if not md5_registrado:
+        return False
+    try:
+        return md5_registrado == drive.md5_file(path)
+    except OSError:
+        return False
 
 
 class Progress:
@@ -67,20 +92,34 @@ def run(args) -> int:
     except drive.DriveError as e:
         print(f"Link da pasta salvo em estado.json é inválido: {e}", file=sys.stderr)
         return 2
-    paths = [os.path.abspath(a) for a in args.arquivo] if args.arquivo else drive.list_videos(args.videos_dir)
-    if not paths:
+    if args.arquivo:
+        # --arquivo e explicito: sempre envia, mesmo que o take.json ja registre esse video como enviado
+        paths, ja_enviados = [os.path.abspath(a) for a in args.arquivo], []
+    else:
+        candidatos = drive.list_videos(args.videos_dir)
+        if args.reenviar:
+            paths, ja_enviados = candidatos, []
+        else:
+            paths, ja_enviados = [], []
+            for path in candidatos:
+                (ja_enviados if _ja_enviado(path, args.rec_dir) else paths).append(path)
+    if not paths and not ja_enviados:
         print(f"Nenhum vídeo para enviar em {args.videos_dir}")
         return 0
     if args.dry_run:
         print(f"Simulação (--dry-run): {len(paths)} vídeo(s), nada é enviado")
     else:
         print(f"Enviando {len(paths)} vídeo(s) para o Drive…")
-    try:
-        results = drive.upload_files(paths, link, on_progress=Progress(), dry_run=args.dry_run,
-                                     videos_dir=args.videos_dir)
-    except drive.DriveError as e:
-        print(f"Erro: {e}", file=sys.stderr)
-        return 1
+    results = []
+    if paths:
+        try:
+            results = drive.upload_files(paths, link, on_progress=Progress(), dry_run=args.dry_run,
+                                         videos_dir=args.videos_dir)
+        except drive.DriveError as e:
+            print(f"Erro: {e}", file=sys.stderr)
+            return 1
+    for path in ja_enviados:
+        print(f"{os.path.basename(path)}: pulado (já enviado antes)")
     for res in results:
         print(f"{os.path.basename(res['arquivo'])}: {describe(res, args.dry_run)}")
         if res["aviso"]:
@@ -90,8 +129,8 @@ def run(args) -> int:
         if not args.dry_run:
             drive.record_sent(res, args.rec_dir)
     sent = sum(1 for r in results if r["ok"] and not r["pulado"])
-    skipped = sum(1 for r in results if r["pulado"])
-    failed = len(paths) - sent - skipped
+    skipped = sum(1 for r in results if r["pulado"]) + len(ja_enviados)
+    failed = len(paths) - sent - (skipped - len(ja_enviados))
     if args.dry_run:
         print(f"Resumo (simulação): {sent} a enviar, {skipped} pulado(s), {failed} falha(s)")
     else:

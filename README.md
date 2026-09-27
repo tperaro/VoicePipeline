@@ -112,13 +112,22 @@ python3 enviar_drive.py --arquivo videos_finais/2026-09-26_101500_silvio_IA.mp4
 
 - Rodar de novo **não duplica** nada: o que já está igual no Drive aparece como "pulado". Se um vídeo mudou, ele
   vira uma nova versão do mesmo arquivo no Drive.
+- Sem `--arquivo`, a decisão de reenviar ou não é do **histórico local** (`take.json`), não do que está hoje na
+  pasta do Drive: um vídeo cujo envio já foi registrado (mesmo MD5 de antes) aparece como "pulado (já enviado
+  antes)" e **nem chega a chamar o rclone**. Isso vale mesmo que a pasta seja de outra pessoa e ela tenha
+  movido, renomeado ou apagado o arquivo lá — o script não sabe disso (e não deveria adivinhar) e não vai
+  recriar nem duplicar o vídeo por causa disso. Use `--reenviar` para ignorar esse histórico e reenviar tudo de
+  `videos_finais/` de qualquer forma (nesse caso quem decide se duplica ou não volta a ser o rclone, como
+  antes). `--arquivo` sempre envia o que foi pedido, mesmo que já esteja registrado como enviado.
 - Depois de cada envio, o script confere o tamanho e o MD5 do arquivo no Drive com o arquivo local.
 - Só sobem vídeos `*_IA.mp4` com o aviso de IA nos metadados. Arquivos `.part` nunca sobem.
 - Um envio por vez: se o app estiver enviando, o script avisa "Outro envio já está em andamento".
 - Código de saída: `0` = tudo enviado ou pulado; `1` = alguma falha; `2` = pasta não configurada ou link
   inválido.
 - Pode ir para o cron, por exemplo a cada hora:
-  `0 * * * * cd ~/orochi-ia-homenagem && python3 enviar_drive.py >> envio_drive.log 2>&1`
+  `0 * * * * cd ~/orochi-ia-homenagem && python3 enviar_drive.py >> envio_drive.log 2>&1`. Rodar isso toda
+  hora é seguro: o histórico local garante que cada vídeo só é enviado uma vez, mesmo que a pasta de destino
+  mude de conteúdo por fora (outra pessoa apagando ou movendo arquivos lá).
 
 ### Mensagens de erro
 
