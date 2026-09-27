@@ -16,7 +16,7 @@ from tkinter import simpledialog, ttk
 from typing import Callable
 
 from studio import audio, drive, procs, render, timeline
-from studio.config import VIDEOS_DIR, Modelo
+from studio.config import VIDEOS_DIR, Modelo, load_estado
 from studio.events import Event, error_message
 from studio.takes import Take
 
@@ -243,12 +243,11 @@ class PipelinePanel:
         return path if os.path.isfile(path) else None
 
     def _av_offset(self) -> int:
-        value = self.app.estado.get("av_offset_ms", 0)
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            self.app.log(f"AVISO: av_offset_ms inválido no estado.json ({value!r}); usando 0")
-            return 0
+        # le o arquivo no clique: o calibrar_av.py --salvar pode ter gravado com o app aberto
+        estado, aviso = load_estado(self.app.estado_path)
+        if aviso:
+            self.app.log(f"AVISO: {aviso}")
+        return estado["av_offset_ms"]           # o load_estado ja garante int
 
     # ---------- botoes e rotulos ----------
 

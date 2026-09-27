@@ -385,6 +385,40 @@ class PipelinePanelTest(unittest.TestCase):
         self.assertTrue(app.model_loaded)                          # a conversao ja carregou o modelo
         self.assertIn("carregado ✓", app.model_status.cget("text"))
 
+    def test_render_reads_av_offset_from_file(self):
+        # calibrar_av.py --salvar com o app aberto: o render usa o valor do arquivo, e o app nao o desfaz
+        take = self.make_take()
+        self.converted(take)
+        app = self.make_app({"av_offset_ms": 0})
+        p = app.pipeline_panel
+        with open(self.estado_path, encoding="utf-8") as f:
+            estado = json.load(f)
+        estado["av_offset_ms"] = 40
+        with open(self.estado_path, "w", encoding="utf-8") as f:
+            json.dump(estado, f)
+        p.btn_render.invoke()
+        self.wait_done(app)
+        app.capture_panel.mic_box.event_generate("<<ComboboxSelected>>")     # o app grava o estado.json
+        p.btn_render.invoke()
+        self.wait_done(app)
+        self.assertEqual([40, 40], [c.av_offset_ms for c in self.render.calls])
+        with open(self.estado_path, encoding="utf-8") as f:
+            self.assertEqual(40, json.load(f)["av_offset_ms"])
+
+    def test_wrong_types_in_estado_open_with_defaults(self):
+        # estado.json editado a mao com tipo errado: o app abre com os padroes e avisa (correcao da Task 1)
+        take = self.make_take()
+        self.converted(take)
+        app = self.make_app({"drive_pasta": 123, "camera": 5, "av_offset_ms": "x"})
+        p = app.pipeline_panel
+        self.assertIn("AVISO: estado.json: valor inválido em camera, drive_pasta, av_offset_ms — usando o padrão",
+                      self.log_text(app))
+        self.assertIn("não configurada", p.drive_label.cget("text"))
+        self.assertEqual("", app.capture_panel.camera_path())
+        p.btn_render.invoke()
+        self.wait_done(app)
+        self.assertEqual(0, self.render.calls[0].av_offset_ms)
+
     def test_audio_only_take_does_not_render(self):
         take = self.make_take(modo="audio")
         app = self.make_app()
