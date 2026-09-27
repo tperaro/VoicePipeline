@@ -5,8 +5,8 @@ Uso (da raiz do projeto, com o python do venv do Applio):
     Applio/.venv/bin/python calibrar_av.py recordings/<id> [--salvar]
 
 Acha o inicio de cada palma no audio alinhado (transiente) e, no video, o instante do contato das maos
-(pico de movimento entre frames seguido de queda, numa regiao escolhida sozinha). Imprime a mediana dos
-offsets como sugestao para av_offset_ms (positivo = audio mais tarde).
+(a parada que fecha a aproximacao, numa regiao escolhida sozinha). Imprime a mediana dos offsets como
+sugestao para av_offset_ms (positivo = audio mais tarde).
 """
 
 import argparse
@@ -34,12 +34,15 @@ CELL = 10                # celulas de 10x10 px para escolher a regiao das maos
 NOISE_LEVEL = 8          # diferenca de luma abaixo disso e ruido
 REGION_FRAC = 0.4        # celulas com >= 40 % da melhor pontuacao entram na regiao
 SEARCH_S = 0.4           # procura o contato a +-0,4 s de cada palma do audio
+SIG_FRAC = 0.3           # movimento >= 30 % do maior da janela conta (no quique a aproximacao tem ~40 %)
 FULL_FRAC = 0.8          # intervalo com >= 80 % do anterior ainda e movimento cheio
-STOP_FRAC = 0.5          # depois do contato o movimento cai abaixo de 50 % do pico
+STOP_FRAC = 0.5          # depois do contato o movimento cai abaixo de 50 % do pico da aproximacao
 WEAK_FRAC = 0.25         # pico < 25 % da mediana das palmas = clique/barulho sem palma
 # confianca
 MAX_SPREAD_MS = 15.0
+NEAR_FRAC = 0.8          # >= 80 % das palmas a ate max(15 ms, 1 frame) da mediana
 LOW_FPS = 20.0
+BIG_OFFSET_MS = 200      # acima disso so avisa: camera e microfone USB costumam ficar abaixo
 
 _SHOWINFO = re.compile(r"\bn:\s*\d+\s+pts:\s*-?\d+\s+pts_time:\s*(-?[0-9.]+(?:e[-+]?\d+)?)")
 
@@ -161,18 +164,30 @@ def region_score(m: np.ndarray, t: np.ndarray, windows: list[tuple[float, float]
     return score
 
 
-def contact_time(d: np.ndarray, t: np.ndarray, lo: float, hi: float) -> float | None:
-    # pico de movimento na janela, segue enquanto o movimento continua cheio; o contato cai dentro do
-    # 1o intervalo que encolhe, na fracao que ele andou: t[q-1] + d[q]/d[q-1] * (t[q] - t[q-1])
+def contact_time(d: np.ndarray, t: np.ndarray, lo: float, hi: float,
+                 cycle_start: float = float("-inf")) -> float | None:
+    # contato = parada que fecha a APROXIMACAO: a 1a corrida da janela com movimento >= SIG_FRAC do maior.
+    # Nao o maior pico: se as maos se afastam tao rapido quanto se juntam (ou quicam), o maior pico e a
+    # separacao, e a parada dela sao as maos ja longe. Corrida que ja vinha de antes de cycle_start (meio do
+    # caminho desde a palma anterior) e a separacao da anterior: None, nunca a parada dela. Segue enquanto o
+    # movimento continua cheio; o contato cai dentro do 1o intervalo que encolhe, na fracao que ele andou:
+    # t[q-1] + d[q]/d[q-1] * (t[q] - t[q-1])
     idx = np.flatnonzero((t >= lo) & (t <= hi))
     if len(idx) == 0:
         return None
-    p = int(idx[np.argmax(d[idx])])
-    peak = d[p]
-    if peak <= 0:
+    big = float(d[idx].max())
+    if big <= 0:
         return None
+    p = int(idx[np.argmax(d[idx] >= SIG_FRAC * big)])
+    b = p
+    while b > 0 and d[b - 1] >= SIG_FRAC * big:
+        b -= 1
+    if t[b] < cycle_start:
+        return None
+    peak = d[p]
     q = p + 1
     while q < len(d) and d[q] >= FULL_FRAC * d[q - 1]:
+        peak = max(peak, d[q])
         q += 1
     if q >= len(d) or t[q - 1] > hi:
         return None
@@ -196,27 +211,38 @@ def _pair_claps(onsets: list[float], d: np.ndarray, t: np.ndarray) -> list[Clap]
     windows = search_windows(onsets)
     peaks = [float(d[(t >= lo) & (t <= hi)].max(initial=0.0)) for lo, hi in windows]
     weak = WEAK_FRAC * float(np.median(peaks))
+    # ciclo de cada palma comeca no meio do caminho desde a anterior
+    starts = [float("-inf"), *((a + b) / 2 for a, b in zip(onsets, onsets[1:]))]
     claps = []
-    for ta, (lo, hi), peak in zip(onsets, windows, peaks):
-        tv = contact_time(d, t, lo, hi) if peak > weak else None
+    for ta, (lo, hi), peak, start in zip(onsets, windows, peaks, starts):
+        tv = contact_time(d, t, lo, hi, start) if peak > weak else None
         if tv is not None:
             claps.append(Clap(round(ta, 4), round(tv, 4), round((tv - ta) * 1000, 1)))
     return claps
 
 
-def _assess(n_claps: int, n_onsets: int, spread: float, fps: float) -> tuple[list[str], str]:
-    # (avisos, confianca): poucas palmas ou dispersao alta = baixa; so o fps baixo = media
-    warnings = []
+def _assess(offs: np.ndarray, n_onsets: int, spread: float, fps: float, suggested: int) -> tuple[list[str], str]:
+    # (avisos, confianca): poucas palmas, dispersao alta ou palmas longe da mediana = baixa; so o fps baixo = media
+    # o MAD ignora ate 49 % de palmas discordando; por isso tambem se conta quantas ficam perto da mediana
+    warnings, n_claps = [], len(offs)
     if n_claps < MIN_CLAPS:
         warnings.append(f"Poucas palmas válidas ({n_claps} de {n_onsets} no áudio; o mínimo é {MIN_CLAPS})")
     if spread > MAX_SPREAD_MS:
         warnings.append(f"Dispersão alta (±{_decimal(spread)} ms): use boa luz e deixe as mãos inteiras no quadro")
+    tol = max(MAX_SPREAD_MS, 1000 / max(fps, 1))
+    near = int(np.sum(np.abs(offs - np.median(offs)) <= tol))
+    if near < NEAR_FRAC * n_claps:
+        warnings.append(f"Palmas discordando: só {near} de {n_claps} ficam a até {round(tol)} ms da mediana "
+                        "(pare as mãos um instante depois de cada palma e afaste-as devagar)")
     confidence = "baixa — refaça a tomada se puder" if warnings else "alta"
     if fps < LOW_FPS:
         warnings.append(f"Câmera a {_decimal(fps)} fps (um frame a cada {round(1000 / max(fps, 1))} ms): "
                         "a 30 fps a medida é mais firme (veja \"fps baixo\" no README)")
         if confidence == "alta":
             confidence = "média — câmera abaixo de 20 fps"
+    if abs(suggested) > BIG_OFFSET_MS:
+        warnings.append(f"Offset acima de {BIG_OFFSET_MS} ms ({suggested:+d} ms), grande para câmera e microfone "
+                        "USB: confira as palmas acima e, na dúvida, grave outra tomada")
     return warnings, confidence
 
 
@@ -244,7 +270,7 @@ def calibrate(take_dir: str) -> Calibration:
     offs = np.array([c.offset_ms for c in claps])
     med = float(np.median(offs))
     spread = round(1.4826 * float(np.median(np.abs(offs - med))), 1)     # desvio robusto (MAD)
-    warnings, confidence = _assess(len(claps), len(onsets), spread, vi.fps_medido)
+    warnings, confidence = _assess(offs, len(onsets), spread, vi.fps_medido, int(round(med)))
     return Calibration(claps=claps, audio_onsets=len(onsets), suggested_ms=int(round(med)), spread_ms=spread,
                        fps=vi.fps_medido, region=_region_box(mask, vi.w, vi.h, frames.shape[1:]),
                        warnings=warnings, confidence=confidence)
@@ -283,6 +309,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if len(cal.claps) < MIN_CLAPS:
         print(f"Não salvei: são precisas pelo menos {MIN_CLAPS} palmas vistas no vídeo.")
+        return 1
+    if cal.confidence.startswith("baixa"):
+        print("Não salvei: a confiança é baixa (veja os avisos acima). Grave outra tomada de palmas.")
         return 1
     antes = load_estado(args.estado)[0]["av_offset_ms"]
     # grava so o av_offset_ms, relendo o arquivo: o app pode estar aberto (ele tambem so grava o que muda)

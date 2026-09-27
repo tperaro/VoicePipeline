@@ -20,23 +20,27 @@ SEPARATE_S = 0.4
 BEEP_S = 0.04
 # contatos com fases diferentes em relacao aos frames (15 e 30 fps)
 CONTACTS = [1.013, 2.047, 3.071, 4.109, 5.138, 6.162]
+CONTACTS_2S = [1.013, 3.047, 5.071, 7.109, 9.138, 11.162]     # uns 2 s entre as palmas, como pede o README
+# (pausa no contato, separacao) da revisao: separacao tao ou mais rapida que a aproximacao (0,3 s)
+FAST_SEPARATIONS = [(0.03, 0.12), (0.1, 0.2), (0.1, 0.25), (0.1, 0.3)]
 
 
-def gap_at(t: float, contacts: list[float]) -> float:
+def gap_at(t: float, contacts: list[float], hold_s: float = HOLD_S, separate_s: float = SEPARATE_S) -> float:
     g = float(GAP_PX)
     for c in contacts:
         if c - APPROACH_S <= t < c:
             g = min(g, GAP_PX * (c - t) / APPROACH_S)
-        elif c <= t < c + HOLD_S:
+        elif c <= t < c + hold_s:
             g = 0.0
-        elif c + HOLD_S <= t < c + HOLD_S + SEPARATE_S:
-            g = min(g, GAP_PX * (t - c - HOLD_S) / SEPARATE_S)
+        elif c + hold_s <= t < c + hold_s + separate_s:
+            g = min(g, GAP_PX * (t - c - hold_s) / separate_s)
     return g
 
 
-def draw_frame(t: float, contacts: list[float], rng, nudges=()) -> np.ndarray:
+def draw_frame(t: float, contacts: list[float], rng, nudges=(), hold_s: float = HOLD_S,
+               separate_s: float = SEPARATE_S) -> np.ndarray:
     img = np.full((H, W), 40.0)
-    half = round(gap_at(t, contacts) / 2)
+    half = round(gap_at(t, contacts, hold_s, separate_s) / 2)
     cx = W // 2
     # "clique" sem palma: a mao direita escorrega 4 px em 0,1 s (movimento fraco que para)
     nudge = round(sum(4 * min(max((t - s) / 0.1, 0.0), 1.0) for s in nudges))
@@ -50,13 +54,16 @@ def draw_frame(t: float, contacts: list[float], rng, nudges=()) -> np.ndarray:
 
 
 def make_clap_take(take_dir: str, contacts: list[float], audio_delay_s: float, fps: int,
-                   duration_s: float = 7.5, nudges=()) -> str:
-    # raw.mkv como o do gravador (MJPEG + PCM mono 48k); bip no contato (e nos nudges) atrasado audio_delay_s
+                   duration_s: float = 7.5, nudges=(), hold_s: float = HOLD_S, separate_s: float = SEPARATE_S,
+                   beep_shifts=()) -> str:
+    # raw.mkv como o do gravador (MJPEG + PCM mono 48k); bip no contato (e nos nudges) atrasado audio_delay_s;
+    # beep_shifts: desvio extra do bip de cada contato (palmas que discordam entre si)
     rng = np.random.default_rng(7)
-    frames = [draw_frame(i / fps, contacts, rng, nudges) for i in range(round(duration_s * fps))]
+    frames = [draw_frame(i / fps, contacts, rng, nudges, hold_s, separate_s) for i in range(round(duration_s * fps))]
     x = rng.normal(0, 0.003, round(duration_s * SR))
-    for c in [*contacts, *nudges]:
-        i0 = round((c + audio_delay_s) * SR)
+    shifts = [*beep_shifts, *[0.0] * (len(contacts) - len(beep_shifts))]
+    for beep in [*(c + s for c, s in zip(contacts, shifts)), *nudges]:
+        i0 = round((beep + audio_delay_s) * SR)
         n = round(BEEP_S * SR)
         x[i0:i0 + n] += 0.5 * np.sin(2 * np.pi * 1000 * np.arange(n) / SR)
     os.makedirs(take_dir, exist_ok=True)
@@ -129,6 +136,19 @@ class ContactTest(unittest.TestCase):
     def test_window_without_motion_is_rejected(self):
         t = np.arange(10) / 15
         self.assertIsNone(calibrar_av.contact_time(np.zeros(10), t, 0.0, 0.6))
+
+    def test_first_stop_wins_over_faster_separation(self):
+        # aproximacao (5), contato, separacao mais rapida (12): o contato e a 1a parada, nao a do maior pico
+        t = np.arange(14) / 30
+        d = np.array([0, 0, 5, 5, 5, 2, 0, 0, 12, 12, 12, 0, 0, 0], dtype=float)
+        self.assertAlmostEqual(calibrar_av.contact_time(d, t, 0.0, 0.45), t[4] + 0.4 / 30, places=9)
+
+    def test_run_from_previous_clap_is_rejected(self):
+        # a corrida ja vinha de antes do inicio do ciclo desta palma: e a separacao da palma anterior
+        t = np.arange(14) / 30
+        d = np.array([0, 6, 6, 6, 6, 6, 6, 0, 0, 0, 0, 0, 0, 0], dtype=float)
+        self.assertIsNone(calibrar_av.contact_time(d, t, 0.1, 0.45, cycle_start=0.1))
+        self.assertAlmostEqual(calibrar_av.contact_time(d, t, 0.1, 0.45), t[6], places=9)
 
 
 class SyntheticTakeTest(unittest.TestCase):
@@ -207,6 +227,74 @@ class SyntheticTakeTest(unittest.TestCase):
         rc, out = run_main(self.dir15, "--estado", estado)
         self.assertEqual(rc, 0, out)
         self.assertFalse(os.path.exists(estado))
+
+
+class ContactAfterApproachTest(unittest.TestCase):
+    # o contato e a parada depois da APROXIMACAO, mesmo quando as maos se afastam rapido
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def calibrate(self, name: str, contacts: list[float], expected_ms: float, **kw):
+        d = os.path.join(self.tmp.name, name)
+        make_clap_take(d, contacts, fps=30, **kw)
+        cal = calibrar_av.calibrate(d)
+        print(f"\n  [calib] {name}: sugerido {cal.suggested_ms} ms (esperado {expected_ms:+.0f}), offsets "
+              f"{[c.offset_ms for c in cal.claps]} ms, dispersão {cal.spread_ms} ms, confiança {cal.confidence}",
+              file=sys.stderr)
+        return d, cal
+
+    def test_fast_separation_still_finds_contact(self):
+        for hold, sep in FAST_SEPARATIONS:
+            with self.subTest(pausa=hold, separacao=sep):
+                _, cal = self.calibrate(f"pausa{hold}_separacao{sep}", CONTACTS, -80, audio_delay_s=0.080,
+                                        hold_s=hold, separate_s=sep)
+                self.assertGreaterEqual(len(cal.claps), calibrar_av.MIN_CLAPS)
+                self.assertLessEqual(abs(cal.suggested_ms + 80), 1000 / 30)            # +-1 frame
+                self.assertLessEqual(max(abs(c.offset_ms + 80) for c in cal.claps), 1000 / 30)
+                self.assertEqual(cal.confidence, "alta")
+
+    def test_previous_clap_separation_is_not_taken_as_contact(self):
+        # palmas a ~1 s, separacao lenta (0,5 s) e audio 100 ms adiantado: a separacao da palma anterior termina
+        # dentro da janela desta. Essa parada nao pode virar contato (daria uns -330 ms, todos iguais)
+        _, cal = self.calibrate("separacao_lenta", CONTACTS, 100, audio_delay_s=-0.1, separate_s=0.5)
+        self.assertTrue(cal.claps)
+        for c in cal.claps:
+            self.assertLessEqual(abs(c.offset_ms - 100), 1000 / 30, c)
+
+    def test_disagreeing_claps_are_low_confidence_and_not_saved(self):
+        # 4 de 6 bips 100 ms depois: o MAD ignora ate 49 % de discordancia, mas so 4 de 6 ficam perto da mediana
+        d, cal = self.calibrate("discordantes", CONTACTS, -180, audio_delay_s=0.080,
+                                beep_shifts=[0.0, 0.1, 0.1, 0.1, 0.1, 0.0])
+        self.assertEqual(len(cal.claps), len(CONTACTS))
+        self.assertLessEqual(cal.spread_ms, calibrar_av.MAX_SPREAD_MS)    # so a dispersao passaria
+        self.assertTrue(cal.confidence.startswith("baixa"), cal.confidence)
+        self.assertTrue(any("4 de 6" in w for w in cal.warnings), cal.warnings)
+        estado = os.path.join(self.tmp.name, "estado_discordantes.json")
+        save_estado({**DEFAULT_ESTADO, "mic": "meu-mic", "av_offset_ms": 12}, estado)
+        with open(estado, "rb") as f:
+            before = f.read()
+        rc, out = run_main(d, "--salvar", "--estado", estado)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("Não salvei: a confiança é baixa", out)
+        with open(estado, "rb") as f:
+            self.assertEqual(before, f.read())
+        self.assertFalse(os.path.exists(estado + ".corrompido"))
+
+    def test_big_offset_warns_but_keeps_confidence(self):
+        # audio 250 ms adiantado, palmas a ~2 s com separacao lenta (como pede o README)
+        _, cal = self.calibrate("offset_grande", CONTACTS_2S, 250, audio_delay_s=-0.25, duration_s=12.5,
+                                separate_s=0.5)
+        self.assertEqual(len(cal.claps), len(CONTACTS_2S))
+        self.assertLessEqual(abs(cal.suggested_ms - 250), 1000 / 30)
+        self.assertEqual(len(cal.warnings), 1, cal.warnings)
+        self.assertIn("200 ms", cal.warnings[0])
+        # so avisa: um atraso real acima de 200 ms (microfone Bluetooth, por exemplo) ainda pode ser salvo
+        self.assertEqual(cal.confidence, "alta")
 
 
 class FewClapsTest(unittest.TestCase):
