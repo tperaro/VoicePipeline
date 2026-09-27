@@ -1,5 +1,6 @@
 """Processos filhos: sempre com setpriv --pdeathsig, ffprobe e mensagens de erro (so stdlib)."""
 
+import errno
 import json
 import os
 import signal
@@ -116,3 +117,16 @@ def ffmpeg_exit_message(rc: int, log_tail: str = "") -> str:
     last = next((ln.strip() for ln in reversed(log_tail.splitlines()) if ln.strip()), "")
     msg = f"ffmpeg falhou (código {rc})"
     return f"{msg}: {last}" if last else msg
+
+
+MSG_DISK_FULL = "Disco cheio — libere espaço"
+
+
+def os_error_message(e: OSError) -> str:
+    # erro de disco/arquivo em PT para o usuario; ENOSPC/EDQUOT viram "Disco cheio"
+    if e.errno in (errno.ENOSPC, errno.EDQUOT):
+        return MSG_DISK_FULL
+    where = ""
+    if isinstance(e.filename, (str, bytes)):
+        where = f" ({os.path.basename(os.path.normpath(os.fsdecode(e.filename)))})"
+    return f"Erro ao acessar o disco{where}: {e.strerror or e}"

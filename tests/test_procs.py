@@ -1,3 +1,4 @@
+import errno
 import os
 import subprocess
 import sys
@@ -162,6 +163,19 @@ class TailAndMessagesTest(unittest.TestCase):
         self.assertEqual(msg, "ffmpeg falhou (código 1): Error opening output file x.mkv")
         self.assertEqual(procs.ffmpeg_exit_message(-9), "ffmpeg foi interrompido (sinal 9)")
         self.assertEqual(procs.ffmpeg_exit_message(1), "ffmpeg falhou (código 1)")
+
+
+class OsErrorMessageTest(unittest.TestCase):
+    def test_disk_full(self):
+        self.assertEqual(procs.MSG_DISK_FULL, "Disco cheio — libere espaço")
+        for code in (errno.ENOSPC, errno.EDQUOT):
+            e = OSError(code, os.strerror(code), "/x/recordings/2026-09-26_101500/render.part.mp4")
+            self.assertEqual(procs.os_error_message(e), "Disco cheio — libere espaço")
+
+    def test_other_errors(self):
+        e = PermissionError(errno.EACCES, "Permission denied", "/x/videos_finais/")
+        self.assertEqual(procs.os_error_message(e), "Erro ao acessar o disco (videos_finais): Permission denied")
+        self.assertEqual(procs.os_error_message(OSError("sem errno")), "Erro ao acessar o disco: sem errno")
 
 
 if __name__ == "__main__":
