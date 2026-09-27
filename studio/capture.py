@@ -27,6 +27,7 @@ MSG_STALL = "A câmera parou de enviar imagem"
 MSG_NO_FRAME = "A câmera não enviou nenhuma imagem"
 MSG_EMPTY = "A gravação está vazia ou corrompida"
 MSG_SHORT = "Gravação curta demais"
+MSG_NO_MIC = "Microfone não encontrado — escolha outro na lista"
 MIN_VIDEO_PACKETS = 3            # o render comeca no 2o frame (ancora) e precisa de 2 frames
 
 
@@ -187,18 +188,26 @@ def check_mic(pid: int, expected_index: int) -> str | None:
     return MSG_MIC if mic_status(pid, expected_index) == MIC_SWAPPED else None
 
 
-def preflight(mic: str, cam: str, rec_dir: str = REC_DIR) -> tuple[int | None, str | None]:
+def preflight(mic: str, cam: str, rec_dir: str = REC_DIR, *, list_mics=None,
+             free_bytes=None) -> tuple[int | None, str | None]:
     # (indice do mic, None) ou (None, motivo PT); cam vazio = so audio
-    index = next((s.index for s in devices.list_mics() if s.name == mic), None)
+    # list_mics/free_bytes None = os de devices (os testes injetam falsos)
+    list_mics = list_mics or devices.list_mics
+    free_bytes = free_bytes or devices.free_bytes
+    index = next((s.index for s in list_mics() if s.name == mic), None)
     if index is None:
-        return None, "Microfone não encontrado — escolha outro na lista"
+        return None, MSG_NO_MIC
     if cam and not os.path.exists(cam):
         return None, procs.FFMPEG_EXIT_MSGS[254]
-    free = devices.free_bytes(rec_dir)
+    free = free_bytes(rec_dir)
     if free < MIN_FREE_BYTES:
         return None, (f"Pouco espaço em disco: {_decimal(free / 1024**3)} GB livres "
                       f"(mínimo {MIN_FREE_BYTES // 1024**3} GB)")
     return index, None
+
+
+def limit_message(max_s: float = MAX_TAKE_S) -> str:
+    return f"Limite de {max_s / 60:g} min atingido — gravação encerrada"
 
 
 class Watchdog:
@@ -218,7 +227,7 @@ class Watchdog:
 
     def check_duration(self, now: float, started: float) -> str | None:
         if now - started >= self.max_s:
-            return f"Limite de {self.max_s / 60:g} min atingido — gravação encerrada"
+            return limit_message(self.max_s)
         return None
 
     def check_fps(self, fps: float | None, now: float, started: float) -> str | None:

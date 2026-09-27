@@ -17,9 +17,8 @@ from PIL import Image, ImageDraw, ImageTk
 from studio import audio, capture, devices, timeline
 from studio.capture import (ACCEPTED_RC, MIN_FPS, PREVIEW_H, PREVIEW_W, CaptureProcess, Watchdog, build_audio_cmd,
                             build_av_cmd, build_preview_cmd, verify_capture)
-from studio.config import MAX_TAKE_S, MIN_FREE_BYTES, Modelo
+from studio.config import MAX_TAKE_S, Modelo
 from studio.events import Event, error_message
-from studio.procs import FFMPEG_EXIT_MSGS
 from studio.takes import Take, new_take
 from studio.watermark import make_watermark
 
@@ -46,10 +45,10 @@ TXT_RECORD, TXT_STOP = "● Gravar", "■ Parar"
 COLOR_REC_ON, COLOR_REC_OFF, COLOR_WARN, COLOR_TEXT = "#d11", "#bbb", "#a80", "#333"
 GUIDE_RGBA = (255, 255, 255, 70)
 IDLE_RGBA = (17, 17, 17, 255)
-MSG_NO_MIC = "Microfone não encontrado — escolha outro na lista"
+MSG_NO_MIC = capture.MSG_NO_MIC
 MSG_NO_CAMERA = "Nenhuma câmera encontrada — desmarque \"Gravar vídeo\" para gravar só o áudio"
 MSG_BAD_DURATION = "Duração inválida: use segundos (ex.: 30) ou deixe vazio"
-MSG_LIMIT = f"Limite de {MAX_TAKE_S // 60} min atingido — gravação encerrada"
+MSG_LIMIT = capture.limit_message()
 
 
 @dataclass(frozen=True)
@@ -385,18 +384,16 @@ class CapturePanel:
             return None, f"{capture.MSG_SHORT} (mínimo {_dec(MIN_REC_S, 'g')} s)"
         av = bool(self.video_on.get())
         mic = self.mic_var.get()
-        index = next((s.index for s in self.hw.list_mics() if s.name == mic), None)
-        if not mic or index is None:
+        if not mic:
             return None, MSG_NO_MIC
         cam = self.camera_path() if av else ""
         if av and not cam:
             return None, MSG_NO_CAMERA
-        if av and not os.path.exists(cam):
-            return None, FFMPEG_EXIT_MSGS[254]
-        free = self.hw.free_bytes(self.app.rec_dir)
-        if free < MIN_FREE_BYTES:
-            return None, (f"Pouco espaço em disco: {_dec(free / 1024**3)} GB livres "
-                          f"(mínimo {MIN_FREE_BYTES // 1024**3} GB)")
+        # microfone conhecido, camera existe e espaco livre: fonte unica com o preflight de capture.py
+        index, err = capture.preflight(mic, cam, self.app.rec_dir, list_mics=self.hw.list_mics,
+                                       free_bytes=self.hw.free_bytes)
+        if err:
+            return None, err
         return {"av": av, "mic": mic, "mic_index": index, "cam": cam, "duration": duration}, None
 
     def _launch(self) -> None:

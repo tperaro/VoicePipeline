@@ -192,6 +192,11 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(w.check_duration(now=400.0, started=100.0),
                          "Limite de 5 min atingido — gravação encerrada")
 
+    def test_limit_message(self):
+        # fonte unica com check_duration e gui_capture.MSG_LIMIT (Task 10, fix de revisao)
+        self.assertEqual("Limite de 5 min atingido — gravação encerrada", capture.limit_message())
+        self.assertEqual("Limite de 2 min atingido — gravação encerrada", capture.limit_message(120))
+
     def test_low_fps(self):
         w = capture.Watchdog()
         self.assertIsNone(w.check_fps(None, now=110.0, started=100.0))
@@ -265,6 +270,22 @@ class PreflightTest(unittest.TestCase):
         self.free.return_value = int(1.5 * 1024**3)
         self.assertEqual(capture.preflight(MIC, self.cam, self.rec),
                          (None, "Pouco espaço em disco: 1,5 GB livres (mínimo 2 GB)"))
+
+    def test_injected_list_mics_and_free_bytes_take_over_devices(self):
+        # gui_capture.py injeta o Hardware falso dos testes (Task 10, fix de revisao); devices nao e chamado
+        injected_mics = mock.Mock(return_value=[Source(54, MIC)])
+        injected_free = mock.Mock(return_value=50 * 1024**3)
+        self.assertEqual(capture.preflight(MIC, self.cam, self.rec, list_mics=injected_mics,
+                                           free_bytes=injected_free), (54, None))
+        injected_mics.assert_called_once_with()
+        injected_free.assert_called_once_with(self.rec)
+        self.list_mics.assert_not_called()
+        self.free.assert_not_called()
+
+    def test_injected_list_mics_reports_unknown_mic(self):
+        injected_mics = mock.Mock(return_value=[Source(56, "alsa_input.usb-ME6S")])
+        self.assertEqual(capture.preflight("alsa_input.sumiu", self.cam, self.rec, list_mics=injected_mics),
+                         (None, "Microfone não encontrado — escolha outro na lista"))
 
 
 class VerifyCaptureTest(unittest.TestCase):
