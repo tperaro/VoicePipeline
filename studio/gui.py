@@ -14,6 +14,7 @@ from studio import procs
 from studio.config import (ESTADO_PATH, LOGS_DIR, MODELOS, REC_DIR, STUDIO_LOG, Modelo, find_latest_checkpoint,
                            get_modelo, load_estado, merge_estado)
 from studio.events import Event, EventBus, JobRunner, error_message
+from studio.gui_capture import CAPTURE_JOB_LABELS, CapturePanel
 from studio.rvc_client import RvcClient
 from studio.takes import Take, latest_take, recover_takes
 
@@ -24,7 +25,7 @@ LEFT_MIN_W = 500          # preview 480x270 + margens
 PUMP_MS = 50
 JOB_LOAD_MODEL = "load_model"
 # texto PT de cada job na confirmacao ao fechar (as outras tasks acrescentam os seus)
-JOB_LABELS = {JOB_LOAD_MODEL: "Carregando o modelo"}
+JOB_LABELS = {JOB_LOAD_MODEL: "Carregando o modelo", **CAPTURE_JOB_LABELS}
 RUNNER_LABELS = {"gpu": "modelo, conversão ou vídeo", "io": "arquivos", "upload": "envio para o Drive"}
 COLOR_BAD, COLOR_BUSY, COLOR_OK = "#a33", "#a80", "#2a2"
 
@@ -32,7 +33,7 @@ COLOR_BAD, COLOR_BUSY, COLOR_OK = "#a33", "#a80", "#2a2"
 class App:
     def __init__(self, root: tk.Tk, rvc_factory=RvcClient, rec_dir: str = REC_DIR,
                  estado_path: str = ESTADO_PATH, log_path: str = STUDIO_LOG, logs_dir: str = LOGS_DIR,
-                 ask_confirm=None):
+                 ask_confirm=None, capture_factory=None, hardware=None):
         self.root = root
         self.rec_dir = rec_dir
         self.estado_path = estado_path
@@ -40,6 +41,9 @@ class App:
         self.logs_dir = logs_dir
         self._rvc_factory = rvc_factory
         self._ask_confirm = ask_confirm or self._ask_yes_no
+        # fabrica do CaptureProcess e acesso ao hardware (None = os de verdade); os testes injetam falsos
+        self.capture_factory = capture_factory
+        self.hardware = hardware
         self.rvc = None
         self._rvc_started = False
         self.model_loaded = False
@@ -75,6 +79,7 @@ class App:
 
         self._build_model_section()
         # os paineis das outras tasks entram aqui, antes da abertura (assim recebem o take_changed inicial)
+        self.capture_panel = CapturePanel(self, self.left)
         self._startup(aviso_estado)
         self._pump_id = root.after(PUMP_MS, self._pump)
 
