@@ -754,6 +754,24 @@ class PipelinePanelTest(unittest.TestCase):
         self.assertEqual(100, float(p.progress.cget("value")))
         self.assertIn("Enviado", p.drive_label.cget("text"))
 
+    def test_upload_click_during_dialog_sends_once(self):
+        # o dialogo do link roda o laco de eventos: um 2o clique em Enviar nao pode enfileirar outro envio
+        take = self.make_take()
+        self.converted(take, mp4=True)
+        asked = []
+
+        def ask(title, prompt, initial):
+            asked.append(title)
+            if len(asked) == 1:
+                app.pipeline_panel.on_upload()                     # o clique que chega com o dialogo aberto
+            return LINK
+
+        app = self.make_app(ask_link=ask)
+        app.pipeline_panel.btn_upload.invoke()
+        self.wait_done(app)
+        self.assertEqual(2, len(asked))
+        self.assertEqual(1, len(self.upload.calls))
+
     def test_upload_dialog_cancelled_sends_nothing(self):
         take = self.make_take()
         self.converted(take, mp4=True)

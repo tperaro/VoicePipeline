@@ -578,7 +578,8 @@ class PipelinePanel:
         if self.uploading is not None or mp4 is None:
             return
         link = self.app.estado.get("drive_pasta") or self.configure_drive()
-        if not link:
+        # o dialogo do link roda o laco de eventos: um 2o clique pode ter comecado um envio enquanto isso
+        if not link or self.uploading is not None:
             return
         cancel = threading.Event()
         if not self._submit(self.app.upload_jobs, JOB_UPLOAD, upload_job, self.deps.upload_files, self.app.bus,
