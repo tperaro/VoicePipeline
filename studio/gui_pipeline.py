@@ -364,7 +364,9 @@ class PipelinePanel:
         except drive.DriveError as e:
             return f"Link da pasta inválido ({e}) — clique Configurar Drive", COLOR_BAD
         sent = self._saida(take, m).get("enviado")
-        if isinstance(sent, dict) and sent.get("md5"):
+        # "Enviado em ..." so quando o mp4 atual ainda existe: uma reconversao tira o mp4 antigo, mas mantem
+        # o "enviado" (o arquivo continua no Drive)
+        if isinstance(sent, dict) and sent.get("md5") and self._output(take, m, "mp4") is not None:
             return f"Enviado em {str(sent.get('quando', '')).replace('T', ' ')} (pasta {folder_id})", COLOR_OK
         return f"Pasta: {folder_id}", COLOR_TEXT
 
@@ -511,7 +513,9 @@ class PipelinePanel:
                 self.app.log(MSG_WORKER_DIED)
                 self._errors["convert"] = MSG_WORKER_DIED
             return
-        saida = {k: v for k, v in self._saida(take, m).items() if k != "erro"}     # o sucesso limpa o erro
+        # o sucesso limpa o erro; o mp4 antigo nao vale mais (o video sai de novo), mas o enviado fica
+        # (o arquivo antigo ainda esta no Drive; enviar_drive.py usa o md5 pra nao reenviar)
+        saida = {k: v for k, v in self._saida(take, m).items() if k not in ("erro", "mp4")}
         saida.update(wav=f"{m.key}.wav", mp3=f"{m.key}_IA.mp3")
         if not self._commit(take, "convert", saidas={**take.saidas, m.key: saida}, status="convertido", erro=""):
             return                            # o take.json nao foi gravado: sem video

@@ -552,6 +552,31 @@ class PipelinePanelTest(unittest.TestCase):
         self.assertEqual("normal", state(p.btn_render))
         self.assertEqual("disabled", state(p.btn_cancel_render))
 
+    def test_reconvert_drops_old_mp4_but_keeps_enviado(self):
+        # reconverter por cima de um video ja enviado: o mp4 antigo some (o novo sai sozinho, encadeado), mas
+        # o "enviado" fica (o arquivo antigo continua no Drive; enviar_drive.py usa o md5 pra nao reenviar)
+        take = self.make_take()
+        self.converted(take, mp4=True)
+        take.saidas["orochi"]["enviado"] = {"md5": MD5, "quando": "2026-09-26T10:20:00"}
+        take.save()
+        self.render.mode = "block"
+        app = self.make_app()
+        p = app.pipeline_panel
+        p.btn_convert.invoke()
+        self.assertTrue(pump_until(app, lambda: self.render.started.is_set(), 10))
+        saved = Take.load(take.dir)
+        self.assertNotIn("mp4", saved.saidas["orochi"])
+        self.assertEqual({"md5": MD5, "quando": "2026-09-26T10:20:00"}, saved.saidas["orochi"]["enviado"])
+        self.assertEqual("disabled", state(p.btn_watch))
+        self.assertEqual("disabled", state(p.btn_upload))
+        self.assertNotIn("Pronto", p.video_label.cget("text"))
+        self.assertNotIn("Enviado", p.drive_label.cget("text"))
+        p.btn_cancel_render.invoke()
+        self.wait_done(app)
+        self.assertNotIn("mp4", Take.load(take.dir).saidas["orochi"])
+        self.assertNotIn("Pronto", p.video_label.cget("text"))
+        self.assertNotIn("Enviado", p.drive_label.cget("text"))
+
     def test_dead_worker_asks_to_click_again_and_restarts(self):
         take = self.make_take(modo="audio")
         rvc_log = os.path.join(self.tmp.name, "rvc.log")
