@@ -324,6 +324,9 @@ class PipelinePanel:
             return f"{head}: falhou — {take.erro}", COLOR_BAD
         if wav:
             return f"{head}: convertida para {m.label} ✓", COLOR_OK
+        erro = self._saida(take, m).get("erro")          # ultimo erro deste modelo (o de outro nao aparece)
+        if erro:
+            return f"{head}: a conversão para {m.label} falhou — {erro}", COLOR_BAD
         return f"{head}: pronta para converter para {m.label}", COLOR_TEXT
 
     def _video_text(self, take: Take | None, m: Modelo, wav: str | None, mp4: str | None) -> tuple[str, str]:
@@ -338,6 +341,9 @@ class PipelinePanel:
             return "Tomada só de áudio: sem vídeo", COLOR_TEXT
         if mp4:
             return f"Pronto: {os.path.basename(mp4)}", COLOR_OK
+        erro = self._saida(take, m).get("erro")          # o ultimo video deste modelo falhou
+        if wav and erro:
+            return f"Falhou: {erro}", COLOR_BAD
         if wav:
             return "Clique Gerar vídeo para gerar o MP4", COLOR_TEXT
         return "O vídeo sai sozinho depois de converter", COLOR_TEXT
@@ -446,13 +452,13 @@ class PipelinePanel:
     def _extracted(self, ok: bool, value) -> None:
         ctx = self._ctx
         take = ctx["take"]
+        section = "volume" if ctx["then"] == JOB_BOOST else "convert"
         if not ok:
-            section = "volume" if ctx["then"] == JOB_BOOST else "convert"
             self._failed(take, section, f"ERRO ao preparar o áudio da tomada {take.id}", value, mark=True)
             return
         vi, fit = value
-        take.video, take.audio_fit = asdict(vi), asdict(fit)
-        take.save()
+        if not self._commit(take, section, video=asdict(vi), audio_fit=asdict(fit)):
+            return
         self.app.log(f"Áudio alinhado da tomada {take.id} preparado")
         if ctx["then"] == JOB_BOOST:
             self._start_boost(take, ctx["modelo"], ctx["gain"])
@@ -495,17 +501,16 @@ class PipelinePanel:
         take, m = ctx["take"], ctx["modelo"]
         if not ok:
             dead = not ctx["rvc"].alive()
-            self._failed(take, "convert", "ERRO na conversão", value, mark=True)
+            self._failed(take, "convert", "ERRO na conversão", value, modelo=m)
             if dead:
                 # o proximo clique chama ensure_rvc(), que sobe um worker novo
                 self.app.log(MSG_WORKER_DIED)
                 self._errors["convert"] = MSG_WORKER_DIED
             return
-        saida = self._saida(take, m)
+        saida = {k: v for k, v in self._saida(take, m).items() if k != "erro"}     # o sucesso limpa o erro
         saida.update(wav=f"{m.key}.wav", mp3=f"{m.key}_IA.mp3")
-        take.saidas[m.key] = saida
-        take.status, take.erro = "convertido", ""
-        take.save()
+        if not self._commit(take, "convert", saidas={**take.saidas, m.key: saida}, status="convertido", erro=""):
+            return                            # o take.json nao foi gravado: sem video
         self._mark_model_loaded()
         self.app.log(f"Voz convertida para {m.label}: {take.id} ({saida['wav']} e {saida['mp3']})")
         if take.modo == "av":
@@ -532,7 +537,7 @@ class PipelinePanel:
     def _start_render(self, take: Take, m: Modelo) -> None:
         wav = self._output(take, m, "wav")
         if wav is None:
-            self._failed(take, "video", "ERRO ao gerar o vídeo", MSG_NO_WAV, mark=False)
+            self._failed(take, "video", "ERRO ao gerar o vídeo", MSG_NO_WAV, modelo=m)
             return
         cancel = threading.Event()
         # o job recebe uma copia da Take: a thread principal pode mexer na original enquanto isso
@@ -556,14 +561,13 @@ class PipelinePanel:
             if ctx["cancel"].is_set():
                 self.app.log(f"Vídeo cancelado ({take.id})")
                 return
-            self._failed(take, "video", "ERRO ao gerar o vídeo", value, mark=True)
+            self._failed(take, "video", "ERRO ao gerar o vídeo", value, modelo=m)
             return
-        saida = self._saida(take, m)
+        # sem "enviado" (o arquivo mudou: ainda nao foi enviado) e sem "erro" (o sucesso limpa)
+        saida = {k: v for k, v in self._saida(take, m).items() if k not in ("enviado", "erro")}
         saida["mp4"] = os.path.relpath(value, take.dir)
-        saida.pop("enviado", None)            # o arquivo mudou: ainda nao foi enviado
-        take.saidas[m.key] = saida
-        take.status, take.erro = "renderizado", ""
-        take.save()
+        if not self._commit(take, "video", saidas={**take.saidas, m.key: saida}, status="renderizado", erro=""):
+            return
         self.app.log(f"Vídeo pronto: {os.path.basename(value)} (em {os.path.dirname(value)})")
 
     # ---------- 5: Drive ----------
@@ -600,15 +604,13 @@ class PipelinePanel:
         res = value if ok else {"ok": False, "erro": value}
         if res.get("ok"):
             self.progress.configure(value=100)
-            if res.get("md5"):
-                saida = self._saida(take, m)
-                saida["enviado"] = {"md5": res["md5"], "quando": datetime.now().isoformat(timespec="seconds")}
-                take.saidas[m.key] = saida
-                take.save()
             what = "Já estava igual no Drive (pulado)" if res.get("pulado") else "Enviado pro Drive"
             self.app.log(f"{what}: {name}")
             if res.get("aviso"):
                 self.app.log(f"AVISO: {res['aviso']}")
+            if res.get("md5"):
+                sent = {"md5": res["md5"], "quando": datetime.now().isoformat(timespec="seconds")}
+                self._commit(take, "drive", saidas={**take.saidas, m.key: {**self._saida(take, m), "enviado": sent}})
             return
         self.progress.configure(value=0)
         erro = res.get("erro") or "Falha desconhecida no envio"
@@ -706,14 +708,37 @@ class PipelinePanel:
 
     # ---------- falhas, fechar e utilitarios ----------
 
-    def _failed(self, take: Take, section: str, what: str, message: str, mark: bool) -> None:
-        # log + rotulo da secao; mark=True grava "falhou" no take.json (thread principal)
+    def _failed(self, take: Take, section: str, what: str, message: str, mark: bool = False,
+                modelo: Modelo | None = None) -> None:
+        # log + rotulo da secao; no take.json (thread principal): mark=True -> "falhou" (so a gravacao: o audio
+        # da tomada nao se le); modelo -> saidas[modelo]["erro"] (conversao e video), sem mexer no status
         self.app.log(f"{what}: {message}")
         if take is self.app.take:
             self._errors[section] = f"Falhou: {message}"
+        if not mark and modelo is None:
+            return
         if mark:
             take.status, take.erro = "falhou", message
+        if modelo is not None:
+            take.saidas[modelo.key] = {**self._saida(take, modelo), "erro": message}
+        try:
             take.save()
+        except OSError as e:
+            self.app.log(f"AVISO: o erro não foi gravado no take.json: {procs.os_error_message(e)}")
+
+    def _commit(self, take: Take, section: str, **changes) -> bool:
+        # aplica e grava o take.json; se nao gravar (ex.: disco cheio), desfaz na memoria e mostra o erro
+        before = {k: copy.deepcopy(getattr(take, k)) for k in changes}
+        for k, v in changes.items():
+            setattr(take, k, v)
+        try:
+            take.save()
+        except OSError as e:
+            for k, v in before.items():
+                setattr(take, k, v)
+            self._failed(take, section, "ERRO ao salvar a tomada", procs.os_error_message(e))
+            return False
+        return True
 
     def _render_reason(self) -> str | None:
         return LABEL_RENDER if self.busy == JOB_RENDER else None

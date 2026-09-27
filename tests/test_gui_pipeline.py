@@ -1,3 +1,4 @@
+import errno
 import gc
 import json
 import os
@@ -479,7 +480,9 @@ class PipelinePanelTest(unittest.TestCase):
         p.btn_convert.invoke()
         self.wait_done(app)
         saved = Take.load(take.dir)
-        self.assertEqual(("falhou", FAIL_MSG), (saved.status, saved.erro))
+        # o erro fica no modelo; "falhou" e so da gravacao (a tomada continua utilizavel)
+        self.assertEqual(("convertido", ""), (saved.status, saved.erro))
+        self.assertEqual(FAIL_MSG, saved.saidas["orochi"]["erro"])
         self.assertNotIn("mp4", saved.saidas["orochi"])
         self.assertIn(f"ERRO ao gerar o vídeo: {FAIL_MSG}", self.log_text(app))
         self.assertIn("Falhou", p.video_label.cget("text"))
@@ -494,6 +497,7 @@ class PipelinePanelTest(unittest.TestCase):
         self.wait_done(app)
         self.assertEqual(1, len(self.rvc.calls))
         self.assertEqual(("renderizado", ""), (app.take.status, app.take.erro))
+        self.assertNotIn("erro", Take.load(take.dir).saidas["orochi"])      # o sucesso limpa o erro
         self.assertIn("Pronto", p.video_label.cget("text"))
 
     def test_missing_wav_does_not_render(self):
@@ -570,12 +574,83 @@ class PipelinePanelTest(unittest.TestCase):
         self.wait_done(app)
         self.assertEqual(1, self.rvc.starts)
         saved = Take.load(take.dir)
-        self.assertEqual("falhou", saved.status)
-        self.assertIn("fechou inesperadamente", saved.erro)
+        self.assertEqual(("gravado", ""), (saved.status, saved.erro))         # a gravacao continua boa
+        self.assertIn("fechou inesperadamente", saved.saidas["orochi"]["erro"])
         p.btn_convert.invoke()
         self.wait_done(app)
         self.assertEqual(2, self.rvc.starts)
         self.assertEqual(("convertido", ""), (app.take.status, app.take.erro))
+        self.assertNotIn("erro", Take.load(take.dir).saidas["orochi"])       # o sucesso limpa o erro
+
+    def test_model_error_follows_the_chosen_model(self):
+        # erro de conversao do Orochi: some com o Silvio escolhido, volta com o Orochi e sobrevive a reabertura
+        take = self.make_take(modo="audio")
+
+        def no_checkpoint(inp, out, model_key):
+            raise RvcError(f"Nenhum checkpoint do modelo {model_key}")
+
+        self.rvc.convert = no_checkpoint
+        app = self.make_app()
+        p = app.pipeline_panel
+        p.btn_convert.invoke()
+        self.wait_done(app)
+        self.assertEqual("Falhou: Nenhum checkpoint do modelo orochi", p.convert_label.cget("text"))
+        for label in ("Silvio Santos", "Orochi"):
+            app.model_var.set(label)
+            app.model_box.event_generate("<<ComboboxSelected>>")
+            app.dispatch_events()
+            if label == "Silvio Santos":
+                self.assertEqual(f"Tomada {take.id}: pronta para converter para Silvio Santos",
+                                 p.convert_label.cget("text"))
+        expected = f"Tomada {take.id}: a conversão para Orochi falhou — Nenhum checkpoint do modelo orochi"
+        self.assertEqual(expected, p.convert_label.cget("text"))
+        self.assertEqual(gui_pipeline.COLOR_BAD, str(p.convert_label.cget("foreground")))
+        app.shutdown()
+        again = self.make_app()                                    # reabrir: a tomada continua a ultima
+        self.assertEqual(take.id, again.take.id)
+        self.assertEqual(expected, again.pipeline_panel.convert_label.cget("text"))
+        self.assertEqual("normal", state(again.pipeline_panel.btn_convert))
+
+    def test_disk_full_errors_reach_the_labels(self):
+        # "Disco cheio" do render (RenderError) e da conversao (RvcError) aparecem no rotulo e reabilitam
+        take = self.make_take()
+        self.converted(take)
+
+        def render_full(*args, **kwargs):
+            raise render.RenderError(procs.MSG_DISK_FULL)
+
+        def convert_full(inp, out, model_key):
+            raise RvcError(procs.MSG_DISK_FULL)
+
+        app = self.make_app(render_final=render_full)
+        p = app.pipeline_panel
+        p.btn_render.invoke()
+        self.wait_done(app)
+        self.assertEqual("Falhou: Disco cheio — libere espaço", p.video_label.cget("text"))
+        self.assertIn("ERRO ao gerar o vídeo: Disco cheio — libere espaço", self.log_text(app))
+        self.assertEqual(procs.MSG_DISK_FULL, Take.load(take.dir).saidas["orochi"]["erro"])
+        self.rvc.convert = convert_full
+        p.btn_convert.invoke()
+        self.wait_done(app)
+        self.assertEqual("Falhou: Disco cheio — libere espaço", p.convert_label.cget("text"))
+        for b in (p.btn_convert, p.btn_render, p.btn_boost):
+            self.assertEqual("normal", state(b), b.cget("text"))
+
+    def test_take_save_failure_shows_error_and_does_not_render(self):
+        # disco cheio ao gravar o take.json depois de converter: erro no rotulo, nada de "convertida" e sem video
+        take = self.make_take()
+        app = self.make_app()
+        p = app.pipeline_panel
+        with mock.patch.object(Take, "save", side_effect=OSError(errno.ENOSPC, "No space left on device")):
+            p.btn_convert.invoke()
+            self.wait_done(app)
+        self.assertEqual([], self.render.calls)
+        self.assertEqual("Falhou: Disco cheio — libere espaço", p.convert_label.cget("text"))
+        self.assertIn("ERRO ao salvar a tomada: Disco cheio — libere espaço", self.log_text(app))
+        self.assertEqual(({}, "gravado"), (app.take.saidas, app.take.status))    # a memoria volta ao take.json
+        self.assertEqual({}, Take.load(take.dir).saidas)
+        self.assertEqual("normal", state(p.btn_convert))
+        self.assertEqual("disabled", state(p.btn_render))
 
     # ---------- gravacao e troca de tomada ----------
 
