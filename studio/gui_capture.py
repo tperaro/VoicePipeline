@@ -35,6 +35,7 @@ IDLE, STARTING, RECORDING, STOPPING, FINISHING = "idle", "starting", "recording"
 TICK_MS = 66              # consulta do ultimo frame (spec 10)
 WATCH_MS = 500            # falha rapida, watchdog de frames e agenda da checagem do mic
 MIC_CHECK_S = 2.0         # a 1a checagem sai 2 s depois do inicio (o pactl leva ~1,2 s para ver o gravador)
+MIC_SWAPS_TO_STOP = 2     # "trocado" em 2 checagens seguidas para a gravacao ("desconhecido" nao conta nem zera)
 PREVIEW_IDLE_S = 300      # preview sem uso por 5 min: desliga (Meet/Zoom nao ficam bloqueados)
 REC_AUDIO_S = 0.5         # so-audio nao tem frame: o REC acende quando passa da falha rapida
 MIN_REC_S = 1.0           # o Parar so libera 1 s depois do inicio (e, no A/V, depois do 1o frame): duplo clique
@@ -57,7 +58,8 @@ class Hardware:
     list_cameras: Callable[[], list[str]] = devices.list_cameras
     list_mics: Callable[[], list[devices.Source]] = devices.list_mics
     free_bytes: Callable[[str], int] = devices.free_bytes
-    check_mic: Callable[[int, int], str | None] = capture.check_mic
+    check_mic: Callable[[int, int], str | None] = capture.check_mic   # so o texto; o painel usa o mic_status
+    mic_status: Callable[[int, int], str] = capture.mic_status        # MIC_OK | MIC_SWAPPED | MIC_UNKNOWN
 
 
 def camera_label(path: str) -> str:
@@ -140,6 +142,8 @@ class CapturePanel:
         self._stop_ready = False                # Parar liberado (MIN_REC_S e, no A/V, o 1o frame)
         self._next_mic_check = 0.0
         self._mic_pending = False
+        self._mic_swaps = 0                     # "trocado" seguidos
+        self._mic_unknown = False               # o aviso do "desconhecido" ja saiu nesta sequencia
         self._failure: str | None = None
         self._fps_warned = False
         self._painted: tuple = (None, None)
@@ -406,6 +410,7 @@ class CapturePanel:
         self._rec_started = time.monotonic()
         self._next_mic_check = self._rec_started + MIC_CHECK_S
         self._mic_pending = False
+        self._mic_swaps, self._mic_unknown = 0, False
         self._fps_warned = False
         self._schedule_duration(plan["duration"])
         self._set_status("Gravando…")
@@ -468,7 +473,7 @@ class CapturePanel:
                 return
         if not self._mic_pending and now >= self._next_mic_check:
             self._next_mic_check = now + MIC_CHECK_S
-            self._mic_pending = self._submit(JOB_MIC, mic_check_job, self.hw.check_mic, cap.pid,
+            self._mic_pending = self._submit(JOB_MIC, mic_check_job, self.hw.mic_status, cap.pid,
                                              self._plan["mic_index"])
 
     def _tick(self) -> None:
@@ -623,12 +628,25 @@ class CapturePanel:
         self._maybe_start_preview()
 
     def _mic_checked(self, ev: Event) -> None:
+        # "desconhecido" (pactl falhou/estourou o timeout) so avisa; "trocado" para no 2o seguido; "ok" zera
         self._mic_pending = False
         if ev.kind != "job_ok":
             return
-        pid, msg = ev.data["result"]
-        if msg and self.state == RECORDING and self.rec is not None and self.rec.pid == pid:
-            self.stop_recording(f"AVISO: {msg} — parando a gravação")
+        pid, status = ev.data["result"]
+        if self.state != RECORDING or self.rec is None or self.rec.pid != pid:
+            return
+        if status == capture.MIC_UNKNOWN:
+            if not self._mic_unknown:
+                self._mic_unknown = True
+                self.app.log(f"AVISO: {capture.MSG_MIC_UNKNOWN}")
+            return
+        self._mic_unknown = False
+        if status != capture.MIC_SWAPPED:
+            self._mic_swaps = 0
+            return
+        self._mic_swaps += 1
+        if self._mic_swaps >= MIC_SWAPS_TO_STOP:
+            self.stop_recording(f"AVISO: {capture.MSG_MIC} — parando a gravação")
 
     # ---------- fechar ----------
 

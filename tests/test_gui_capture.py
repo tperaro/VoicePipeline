@@ -1,3 +1,4 @@
+import dataclasses
 import gc
 import itertools
 import json
@@ -173,7 +174,8 @@ class CapturePanelTest(unittest.TestCase):
         self.cams = [self.cam]
         self.mics = [Source(54, MIC), Source(56, OTHER_MIC)]
         self.free = 50 * 1024**3
-        self.mic_result = None
+        self.mic_state = capture.MIC_OK         # resposta do mic_status falso quando a fila mic_states acaba
+        self.mic_states: list[str] = []
         self.mic_checks: list[tuple] = []
         self.caps: list[FakeCapture] = []
         self.fail_next = None
@@ -193,9 +195,9 @@ class CapturePanelTest(unittest.TestCase):
         self.caps.append(cap)
         return cap
 
-    def check_mic(self, pid, expected_index):
+    def mic_status(self, pid, expected_index):
         self.mic_checks.append((threading.current_thread().name, pid, expected_index))
-        return self.mic_result
+        return self.mic_states.pop(0) if self.mic_states else self.mic_state
 
     def confirm(self, title, message):
         self.confirm_calls.append((title, message))
@@ -208,7 +210,7 @@ class CapturePanelTest(unittest.TestCase):
         root = tk.Tk()
         root.withdraw()
         hw = gui_capture.Hardware(list_cameras=lambda: list(self.cams), list_mics=lambda: list(self.mics),
-                                  free_bytes=lambda path: self.free, check_mic=self.check_mic)
+                                  free_bytes=lambda path: self.free, mic_status=self.mic_status)
         app = gui.App(root, rec_dir=self.rec_dir, estado_path=self.estado_path, log_path=self.log_path,
                       logs_dir=os.path.join(self.tmp.name, "logs"), ask_confirm=self.confirm,
                       capture_factory=self.factory, hardware=hw)
@@ -547,13 +549,48 @@ class CapturePanelTest(unittest.TestCase):
     def test_mic_switched_stops_recording(self):
         app = self.make_app()
         p = app.capture_panel
-        self.mic_result = capture.MSG_MIC
+        self.mic_state = capture.MIC_SWAPPED
         take, rec = self.start_recording(app)
         rec.push(RED)
         self.wait_idle(app)
         self.assertEqual(("job-io", rec.pid, 54), self.mic_checks[0])
+        self.assertEqual(2, len(self.mic_checks))                  # para na 2a checagem seguida
         self.assertIn("Microfone desconectado ou trocado", self.log_text(app))
         self.assertEqual("gravado", Take.load(take.dir).status)
+
+    def test_mic_swapped_stops_only_on_second_in_a_row(self):
+        # "trocado" isolado nao para ("ok" zera a contagem); "desconhecido" no meio nao conta nem zera
+        app = self.make_app({"gravar_video": False})
+        swapped, ok, unknown = capture.MIC_SWAPPED, capture.MIC_OK, capture.MIC_UNKNOWN
+        self.mic_states = [swapped, ok, swapped, unknown]
+        self.mic_state = swapped
+        self.start_recording(app)
+        self.wait_idle(app)
+        self.assertEqual(5, len(self.mic_checks))
+        self.assertIn("AVISO: Microfone desconectado ou trocado — parando a gravação", self.log_text(app))
+        self.assertEqual(1, self.log_text(app).count(capture.MSG_MIC_UNKNOWN))
+
+    def test_pactl_failure_is_unknown_and_does_not_stop(self):
+        # pactl que falha ou estoura o timeout (5 s) e "nao sei": um aviso no log e a gravacao segue
+        app = self.make_app({"gravar_video": False})
+        p = app.capture_panel
+        seen = []
+
+        def real_status(pid, expected_index):
+            seen.append(capture.mic_status(pid, expected_index))
+            return seen[-1]
+
+        p.hw = dataclasses.replace(p.hw, mic_status=real_status)
+        with mock.patch("studio.devices._pactl", return_value=None):
+            self.start_recording(app)
+            self.assertTrue(pump_until(app, lambda: len(seen) >= 3))
+            pump_for(app, 0.1)
+            self.assertEqual("recording", p.state)
+            p.btn_record.invoke()
+            self.wait_idle(app)
+        self.assertEqual({capture.MIC_UNKNOWN}, set(seen))
+        self.assertEqual(1, self.log_text(app).count(f"AVISO: {capture.MSG_MIC_UNKNOWN}"))
+        self.assertEqual("gravado", app.take.status)
 
     def test_duration_and_limit_stop_by_themselves(self):
         app = self.make_app({"gravar_video": False})
