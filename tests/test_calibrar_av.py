@@ -187,6 +187,21 @@ class SyntheticTakeTest(unittest.TestCase):
         self.assertIsNone(warn)
         self.assertEqual((saved["av_offset_ms"], saved["mic"]), (cal.suggested_ms, "meu-mic"))
 
+    def test_salvar_merges_and_keeps_corrupted_estado(self):
+        # --salvar grava so o av_offset_ms (merge_estado): um estado.json quebrado fica guardado em .corrompido
+        estado = os.path.join(self.tmp.name, "quebrado.json")
+        broken = '{"drive_pasta": "https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUv",}'
+        with open(estado, "w", encoding="utf-8") as f:
+            f.write(broken)
+        rc, out = run_main(self.dir15, "--salvar", "--estado", estado)
+        self.assertEqual(rc, 0, out)
+        with open(estado + ".corrompido", encoding="utf-8") as f:
+            self.assertEqual(broken, f.read())
+        self.assertIn("cópia guardada em quebrado.json.corrompido", out)
+        saved, warn = load_estado(estado)
+        self.assertIsNone(warn)
+        self.assertEqual(calibrar_av.calibrate(self.dir15).suggested_ms, saved["av_offset_ms"])
+
     def test_without_salvar_estado_is_untouched(self):
         estado = os.path.join(self.tmp.name, "intocado.json")
         rc, out = run_main(self.dir15, "--estado", estado)

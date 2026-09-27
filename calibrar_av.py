@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from studio import procs, timeline
-from studio.config import ESTADO_PATH, load_estado, save_estado
+from studio.config import ESTADO_PATH, load_estado, merge_estado
 
 MIN_CLAPS = 5
 # audio
@@ -284,12 +284,11 @@ def main(argv: list[str] | None = None) -> int:
     if len(cal.claps) < MIN_CLAPS:
         print(f"Não salvei: são precisas pelo menos {MIN_CLAPS} palmas vistas no vídeo.")
         return 1
-    estado, aviso = load_estado(args.estado)
+    antes = load_estado(args.estado)[0]["av_offset_ms"]
+    # grava so o av_offset_ms, relendo o arquivo: o app pode estar aberto (ele tambem so grava o que muda)
+    _, aviso = merge_estado({"av_offset_ms": cal.suggested_ms}, args.estado)
     if aviso:
         print(f"Aviso: {aviso}", file=sys.stderr)
-    antes = estado.get("av_offset_ms", 0)
-    estado["av_offset_ms"] = cal.suggested_ms
-    save_estado(estado, args.estado)
     print(f"av_offset_ms = {cal.suggested_ms:+d} ms salvo em {args.estado} (antes: {antes})")
     return 0
 
