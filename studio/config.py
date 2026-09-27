@@ -59,7 +59,8 @@ def metadata_tags(m: Modelo) -> dict[str, str]:
 
 
 def find_latest_checkpoint(model_key: str, logs_dir: str = LOGS_DIR) -> str | None:
-    pattern = os.path.join(logs_dir, model_key, f"{model_key}_*e_*s.pth")
+    # colchete no caminho (ex.: "orochi [v2]") nao pode virar padrao do glob
+    pattern = os.path.join(glob.escape(logs_dir), glob.escape(model_key), f"{glob.escape(model_key)}_*e_*s.pth")
     files = glob.glob(pattern)
 
     def epoch(path):

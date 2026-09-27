@@ -192,5 +192,18 @@ class AtomicWriteTest(unittest.TestCase):
         self.assertEqual(os.listdir(self.tmp.name), ["x.json"])
 
 
+class CheckpointEscapeTest(unittest.TestCase):
+    def test_glob_chars_in_path_and_key(self):
+        # colchete no caminho do projeto e padrao do glob: sem glob.escape o checkpoint some
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = os.path.join(tmp, "orochi [v2]", "logs")
+            for key in ("orochi", "voz[1]"):
+                os.makedirs(os.path.join(logs, key))
+                open(os.path.join(logs, key, f"{key}_50e_2650s.pth"), "wb").close()
+                best = os.path.join(logs, key, f"{key}_350e_18550s.pth")
+                open(best, "wb").close()
+                self.assertEqual(config.find_latest_checkpoint(key, logs), best)
+
+
 if __name__ == "__main__":
     unittest.main()
