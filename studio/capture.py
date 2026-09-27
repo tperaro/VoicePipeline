@@ -21,6 +21,8 @@ FPS_MIN_FRAMES = 5
 MIN_FPS = 12.0
 FPS_GRACE_S = 3.0                # o fps dos primeiros segundos sai baixo (atraso do 1o frame)
 MSG_MIC = "Microfone desconectado ou trocado"
+MSG_MIC_UNKNOWN = "Não deu para conferir o microfone (o pactl não respondeu)"
+MIC_OK, MIC_SWAPPED, MIC_UNKNOWN = "ok", "trocado", "desconhecido"     # resultados de mic_status
 MSG_STALL = "A câmera parou de enviar imagem"
 MSG_NO_FRAME = "A câmera não enviou nenhuma imagem"
 MSG_EMPTY = "A gravação está vazia ou corrompida"
@@ -167,9 +169,18 @@ def verify_capture(path: str, need_video: bool) -> str | None:
     return None
 
 
-def check_mic(pid: int, expected_index: int) -> str | None:
+def mic_status(pid: int, expected_index: int) -> str:
     # o setpriv executa o ffmpeg no mesmo processo: o pid do Popen e o do ffmpeg
-    return None if devices.mic_source_of_pid(pid) == expected_index else MSG_MIC
+    try:
+        found = devices.mic_source_of_pid(pid)
+    except devices.PactlError:
+        return MIC_UNKNOWN                  # pactl falhou/estourou o timeout: nao sei
+    return MIC_OK if found == expected_index else MIC_SWAPPED
+
+
+def check_mic(pid: int, expected_index: int) -> str | None:
+    # MSG_MIC so com o pactl respondendo (outro indice ou gravador ausente); None = ok ou nao sei
+    return MSG_MIC if mic_status(pid, expected_index) == MIC_SWAPPED else None
 
 
 def preflight(mic: str, cam: str, rec_dir: str = REC_DIR) -> tuple[int | None, str | None]:

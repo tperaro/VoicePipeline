@@ -213,10 +213,24 @@ class CheckMicTest(unittest.TestCase):
         m.assert_called_once_with(4321)
 
     def test_other_source_or_missing(self):
-        # nome invalido/desplugado: o PipeWire grava do mic padrao sem erro (spec 5.4.5)
+        # nome invalido/desplugado: o PipeWire grava do mic padrao sem erro (spec 5.4.5); None = o pactl
+        # respondeu e o gravador nao aparece nele (sumiu)
         for found in (56, None):
             with mock.patch("studio.capture.devices.mic_source_of_pid", return_value=found):
                 self.assertEqual(capture.check_mic(4321, 54), "Microfone desconectado ou trocado")
+                self.assertEqual(capture.mic_status(4321, 54), capture.MIC_SWAPPED)
+
+    def test_pactl_failure_is_unknown(self):
+        # pactl que falhou ou estourou o timeout: "nao sei"; a gravacao nao para por isso
+        with mock.patch("studio.devices._pactl", return_value=None):
+            self.assertIsNone(capture.check_mic(4321, 54))
+            self.assertEqual(capture.mic_status(4321, 54), capture.MIC_UNKNOWN)
+        self.assertEqual(capture.MSG_MIC_UNKNOWN, "Não deu para conferir o microfone (o pactl não respondeu)")
+
+    def test_mic_status_values(self):
+        self.assertEqual((capture.MIC_OK, capture.MIC_SWAPPED, capture.MIC_UNKNOWN), ("ok", "trocado", "desconhecido"))
+        with mock.patch("studio.capture.devices.mic_source_of_pid", return_value=54):
+            self.assertEqual(capture.mic_status(4321, 54), capture.MIC_OK)
 
 
 class PreflightTest(unittest.TestCase):
