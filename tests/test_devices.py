@@ -219,10 +219,17 @@ class SourceOutputsTest(unittest.TestCase):
         self.assertIsNotNone(run.call_args.kwargs.get("timeout"))
 
     def test_mic_source_of_pid_failures(self):
-        with mock.patch("studio.devices.run", return_value=completed(SOURCE_OUTPUTS, rc=1)):
-            self.assertIsNone(devices.mic_source_of_pid(873534))
-        with mock.patch("studio.devices.run", side_effect=subprocess.TimeoutExpired(["pactl"], 5)):
-            self.assertIsNone(devices.mic_source_of_pid(873534))
+        # pactl que falhou ou estourou o timeout = "nao sei" (PactlError), diferente de gravador ausente (None)
+        failures = {"rc 1": {"return_value": completed(SOURCE_OUTPUTS, rc=1)},
+                    "timeout": {"side_effect": subprocess.TimeoutExpired(["pactl"], 5)},
+                    "sem setpriv": {"side_effect": FileNotFoundError("setpriv")}}
+        for name, kw in failures.items():
+            with self.subTest(name), mock.patch("studio.devices.run", **kw):
+                with self.assertRaises(devices.PactlError) as cm:
+                    devices.mic_source_of_pid(873534)
+                self.assertEqual(str(cm.exception), "O pactl não respondeu — não deu para conferir o microfone")
+        with mock.patch("studio.devices.run", return_value=completed(SOURCE_OUTPUTS)):
+            self.assertIsNone(devices.mic_source_of_pid(1))     # pactl ok e o pid sem source-output
 
 
 class FreeBytesTest(unittest.TestCase):

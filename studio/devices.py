@@ -72,10 +72,15 @@ def parse_source_outputs(text: str) -> dict[int, int]:
     return result
 
 
+class PactlError(Exception):
+    """O pactl falhou ou estourou o timeout: nao da para saber qual microfone o gravador usa."""
+
+
 def mic_source_of_pid(pid: int) -> int | None:
+    # None = o pactl respondeu e o pid nao tem source-output (gravador sumiu); PactlError = nao sei
     text = _pactl(["list", "source-outputs"], env={**os.environ, "LC_ALL": "C"})
     if text is None:
-        return None
+        raise PactlError("O pactl não respondeu — não deu para conferir o microfone")
     return parse_source_outputs(text).get(pid)
 
 
