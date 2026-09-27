@@ -1,10 +1,13 @@
 import contextlib
+import errno
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 import soundfile as sf
@@ -247,6 +250,55 @@ class WorkerProtocolTest(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(d, "o.wav")))
         self.assertIn("[fake applio]", p.stderr)          # os prints foram para o stderr
         self.assertIn("lixo de biblioteca nativa", p.stderr)
+
+
+class DiskFullTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.inp = write_wav(os.path.join(self.dir, "audio.wav"), speech_like(3.0))
+        self.out = os.path.join(self.dir, "silvio.wav")
+
+    def test_enospc_in_infer_answers_pt_and_cleans_up(self):
+        def full_disk(src, dst):
+            with open(dst, "wb") as f:
+                f.write(b"RIFF metade")
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        req = {"id": "9", "op": "convert", "input": self.inp, "output": self.out, "model": "silvio"}
+        with mock.patch.dict(os.environ, {"STUDIO_RVC_FAKE": "1"}), mock.patch.object(w, "fake_infer", full_disk), \
+                contextlib.redirect_stderr(io.StringIO()):
+            resp = w.handle(req)
+        self.assertEqual(resp, {"id": "9", "ok": False, "erro": "Disco cheio — libere espaço"})
+        self.assertEqual(os.listdir(self.dir), ["audio.wav"])       # nem .rvc_* nem .part.wav
+
+    def test_part_write_stops_midway(self):
+        # com o disco cheio o soundfile nao levanta OSError: o write para no meio (AssertionError)
+        real_write = sf.write
+
+        def short_write(path, data, samplerate, **kwargs):
+            if path.endswith(".part.wav"):
+                real_write(path, data[:10], samplerate, **kwargs)
+                raise AssertionError
+            return real_write(path, data, samplerate, **kwargs)
+
+        cases = ((0, "Disco cheio — libere espaço"), (50 * 1024**3, "Não foi possível gravar silvio.part.wav"))
+        for free, want in cases:
+            with self.subTest(free=free), mock.patch.object(sf, "write", short_write), \
+                    mock.patch("shutil.disk_usage", return_value=mock.Mock(free=free)):
+                with self.assertRaises(w.ConvertError) as cm:
+                    w.convert(self.inp, self.out, "silvio", run_infer=quiet_fake)
+                self.assertEqual(str(cm.exception), want)
+                self.assertEqual(os.listdir(self.dir), ["audio.wav"])
+
+    def test_rvc_without_output_on_full_disk(self):
+        # o Applio so imprime o erro e volta sem gravar a saida: com o disco cheio a mensagem diz isso
+        with mock.patch("shutil.disk_usage", return_value=mock.Mock(free=1024)):
+            with self.assertRaises(w.ConvertError) as cm:
+                w.convert(self.inp, self.out, "silvio", run_infer=lambda src, dst: None)
+        self.assertEqual(str(cm.exception), "Disco cheio — libere espaço")
+        self.assertEqual(os.listdir(self.dir), ["audio.wav"])
 
 
 if __name__ == "__main__":

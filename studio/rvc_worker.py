@@ -7,6 +7,7 @@ linha no stdin e uma resposta JSON por linha num fd dedicado (os prints do Appli
 import contextlib
 import json
 import os
+import shutil
 import sys
 import tempfile
 import traceback
@@ -21,6 +22,7 @@ import soundfile as sf  # noqa: E402
 
 from studio.config import (APPLIO_DIR, LOGS_DIR, find_latest_checkpoint, get_modelo,  # noqa: E402
                            model_index_path)
+from studio.procs import MSG_DISK_FULL, os_error_message  # noqa: E402
 
 MAX_SINGLE_S = 40.0     # ate ~41 s o RVC preserva o tempo: um pedaco so
 MAX_PIECE_S = 30.0
@@ -28,6 +30,7 @@ SEARCH_S = 3.0
 CTX_S = 0.5
 XF_S = 0.005
 FAKE_SR = 40000         # taxa do conversor falso (a mesma do silvio)
+LOW_DISK_BYTES = 64 * 1024**2   # com menos que isso livre, uma escrita que falhou e disco cheio
 
 # mesmos parametros do orochi_studio.py
 APPLIO_PARAMS = dict(pitch=0, index_rate=0.75, volume_envelope=1.0, protect=0.33, f0_method="rmvpe",
@@ -42,6 +45,23 @@ class ConvertError(Exception):
 
 def fake_mode() -> bool:
     return os.environ.get("STUDIO_RVC_FAKE") == "1"
+
+
+def disk_full(folder: str) -> bool:
+    try:
+        return shutil.disk_usage(folder).free < LOW_DISK_BYTES
+    except OSError:
+        return False
+
+
+def write_wav(path: str, y: np.ndarray, sr: int) -> None:
+    # com o disco cheio o soundfile nao levanta OSError: o write para no meio (AssertionError) ou o libsndfile falha
+    try:
+        sf.write(path, y, sr, subtype="PCM_16")
+    except (AssertionError, sf.SoundFileError):
+        if disk_full(os.path.dirname(path)):
+            raise ConvertError(MSG_DISK_FULL) from None
+        raise ConvertError(f"Não foi possível gravar {os.path.basename(path)}") from None
 
 
 def frame_energy(x: np.ndarray, sr: int) -> np.ndarray:
@@ -143,10 +163,12 @@ def convert_pieces(x: np.ndarray, sr: int, cuts: list[float], work: str, run_inf
     for i, (a, b) in enumerate(zip(cuts, cuts[1:])):
         ca, cb = max(0.0, a - CTX_S), min(total_s, b + CTX_S)
         src, dst = os.path.join(work, f"p{i:03d}.wav"), os.path.join(work, f"p{i:03d}_out.wav")
-        sf.write(src, x[int(round(ca * sr)):int(round(cb * sr))], sr, subtype="PCM_16")
+        write_wav(src, x[int(round(ca * sr)):int(round(cb * sr))], sr)
         run_infer(src, dst)
         if not os.path.isfile(dst):
-            raise ConvertError("O RVC não gerou o áudio convertido (veja studio_rvc.log)")
+            # o Applio so imprime o erro (ex.: disco cheio) e volta sem gravar a saida
+            raise ConvertError(MSG_DISK_FULL if disk_full(work) else
+                               "O RVC não gerou o áudio convertido (veja studio_rvc.log)")
         y, psr = sf.read(dst, always_2d=True)
         if out_sr not in (None, psr):
             raise ConvertError("O RVC devolveu taxas de amostragem diferentes entre os pedaços")
@@ -182,7 +204,7 @@ def convert(inp: str, out: str, model_key: str, run_infer=None) -> dict:
         with tempfile.TemporaryDirectory(prefix=".rvc_", dir=os.path.dirname(out)) as work:
             pieces, out_sr = convert_pieces(x, sr, cuts, work, run_infer)
         y = assemble(pieces, total_s, out_sr)
-        sf.write(part, y, out_sr, subtype="PCM_16")
+        write_wav(part, y, out_sr)
         info = sf.info(part)
         if info.samplerate != out_sr or info.frames != len(y) or len(y) == 0:
             raise ConvertError("Saída do conversor inválida")
@@ -212,6 +234,9 @@ def handle(req) -> dict:
         return {"id": rid, "ok": False, "erro": f"Operação desconhecida: {op}"}
     except ConvertError as e:
         return {"id": rid, "ok": False, "erro": str(e)}
+    except OSError as e:
+        traceback.print_exc()           # vai para o studio_rvc.log
+        return {"id": rid, "ok": False, "erro": os_error_message(e)}
     except Exception as e:
         traceback.print_exc()
         return {"id": rid, "ok": False, "erro": f"Falha no conversor: {type(e).__name__}: {e}"}
