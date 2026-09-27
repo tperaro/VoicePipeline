@@ -320,6 +320,22 @@ class VerifyCaptureTest(unittest.TestCase):
         with mock.patch("studio.capture.procs.ffprobe_json", return_value=data):
             self.assertEqual(capture.verify_capture(self.wav, need_video=False), "A gravação ficou com duração zero")
 
+    def test_too_short_video(self):
+        # duplo clique em Gravar: 1 ou 2 pacotes de video nao dao video (o render comeca no 2o frame)
+        short = os.path.join(self.tmp.name, "curto.mkv")
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi",
+                        "-i", "testsrc2=s=320x240:r=30:d=0.066667", "-f", "lavfi",
+                        "-i", "aevalsrc=0:s=48000:c=mono:d=0.066667", "-c:v", "mjpeg", "-c:a", "pcm_s16le", short],
+                       check=True)
+        self.assertEqual(capture.verify_capture(short, need_video=True), "Gravação curta demais")
+        self.assertIsNone(capture.verify_capture(short, need_video=False))
+        for n, want in ((1, "Gravação curta demais"), (3, None)):
+            data = {"streams": [{"codec_type": "video", "nb_read_packets": str(n)},
+                                {"codec_type": "audio", "nb_read_packets": "5"}], "format": {"duration": "0.1"}}
+            with mock.patch("studio.capture.procs.ffprobe_json", return_value=data):
+                self.assertEqual(capture.verify_capture(self.mkv, need_video=True), want)
+        self.assertEqual((capture.MSG_SHORT, capture.MIN_VIDEO_PACKETS), ("Gravação curta demais", 3))
+
 
 if __name__ == "__main__":
     unittest.main()

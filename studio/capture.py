@@ -26,6 +26,8 @@ MIC_OK, MIC_SWAPPED, MIC_UNKNOWN = "ok", "trocado", "desconhecido"     # resulta
 MSG_STALL = "A câmera parou de enviar imagem"
 MSG_NO_FRAME = "A câmera não enviou nenhuma imagem"
 MSG_EMPTY = "A gravação está vazia ou corrompida"
+MSG_SHORT = "Gravação curta demais"
+MIN_VIDEO_PACKETS = 3            # o render comeca no 2o frame (ancora) e precisa de 2 frames
 
 
 def _mic_input(mic: str) -> list[str]:
@@ -164,6 +166,8 @@ def verify_capture(path: str, need_video: bool) -> str | None:
         return "A gravação não tem áudio"
     if need_video and not packets["video"]:
         return "A gravação não tem vídeo"
+    if need_video and packets["video"] < MIN_VIDEO_PACKETS:
+        return MSG_SHORT                # parou antes do 3o frame (ex.: duplo clique em Gravar)
     if not _seconds(data.get("format", {}).get("duration")) > 0:
         return "A gravação ficou com duração zero"
     return None
