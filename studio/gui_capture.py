@@ -122,6 +122,15 @@ def finish_capture(raw: str, need_video: bool, audio_out: str) -> dict:
     return out
 
 
+def gaps_warning(take: Take) -> str | None:
+    # spec 6.3.3: com buraco no audio o alinhamento usa o modo assincrono (aresample=async)
+    gaps = (take.audio_fit or {}).get("gaps") or 0
+    if gaps <= 0:
+        return None
+    return (f"AVISO: o áudio da tomada {take.id} teve {gaps} buraco(s) acima de {timeline.GAP_S * 1000:g} ms; "
+            "o alinhamento usou o modo assíncrono — confira a sincronia")
+
+
 class CapturePanel:
     def __init__(self, app, parent):
         self.app = app
@@ -599,6 +608,9 @@ class CapturePanel:
             self.app.log("AVISO: a gravação parou antes da hora; o que foi gravado até ali foi mantido")
         if fps and fps < MIN_FPS:
             self.app.log(f"AVISO: a câmera gravou a {_dec(fps)} fps (abaixo de {MIN_FPS:g}) — pouca luz?")
+        warn = gaps_warning(take)
+        if warn:
+            self.app.log(warn)
         mean, peak = res["volume"]
         if peak is not None:
             self.app.log(f"Volume da gravação: média {_dec(mean or 0)} dB, pico {_dec(peak)} dB")

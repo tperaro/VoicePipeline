@@ -535,6 +535,33 @@ class CapturePanelTest(unittest.TestCase):
         self.assertEqual("● Gravar", p.btn_record.cget("text"))
         self.assertEqual("normal", str(p.btn_record.cget("state")))
 
+    def test_audio_gaps_warn_in_log(self):
+        # buraco no audio (spec 6.3.3): o alinhamento usa o modo assincrono e o log avisa
+        app = self.make_app()
+        p = app.capture_panel
+        real = gui_capture.timeline.extract_aligned_audio
+
+        def with_gaps(raw, out):
+            vi, fit = real(raw, out)
+            fit.gaps = 2
+            return vi, fit
+
+        def record_and_stop() -> Take:
+            take, rec = self.start_recording(app)
+            rec.push(RED)
+            self.assertTrue(pump_until(app, lambda: str(p.btn_record.cget("state")) == "normal"))
+            p.btn_record.invoke()
+            self.wait_idle(app)
+            return take
+
+        record_and_stop()
+        self.assertNotIn("buraco", self.log_text(app))
+        with mock.patch.object(gui_capture.timeline, "extract_aligned_audio", with_gaps):
+            take = record_and_stop()
+        self.assertEqual(2, Take.load(take.dir).audio_fit["gaps"])
+        self.assertIn(f"AVISO: o áudio da tomada {take.id} teve 2 buraco(s) acima de 30 ms; o alinhamento usou o "
+                      "modo assíncrono — confira a sincronia", self.log_text(app))
+
     def test_watchdog_stops_when_camera_stalls(self):
         app = self.make_app()
         p = app.capture_panel
