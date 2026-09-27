@@ -2,6 +2,7 @@
 
 import collections
 import os
+import subprocess
 import threading
 import time
 
@@ -209,3 +210,112 @@ class Watchdog:
         if fps is None or fps >= self.min_fps or now - started < self.fps_grace_s:
             return None
         return f"Câmera a {_decimal(fps)} fps (abaixo de {self.min_fps:g}) — pouca luz?"
+
+
+def _wait(p: subprocess.Popen, timeout: float) -> int | None:
+    try:
+        return p.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def _close(stream) -> None:
+    if stream is None:
+        return
+    try:
+        stream.close()
+    except OSError:
+        pass
+
+
+class CaptureProcess:
+    # um ffmpeg de captura (A/V, preview ou so audio); para com q e escala ate o SIGKILL
+    def __init__(self, argv: list[str], log_path: str, with_preview: bool):
+        self.argv = list(argv)
+        self.log_path = log_path
+        self.with_preview = with_preview
+        self.stop_steps: list[str] = []
+        self._proc: subprocess.Popen | None = None
+        self._reader: FrameReader | None = None
+        self._started: float | None = None
+        self._stop_requested = False
+        self._lock = threading.Lock()
+
+    def start(self) -> None:
+        # CHAMAR NA THREAD PRINCIPAL DO TK: o pdeathsig vale enquanto a thread que fez o spawn viver
+        if self._proc is not None:
+            raise RuntimeError("captura já iniciada")
+        stdout = subprocess.PIPE if self.with_preview else subprocess.DEVNULL
+        with open(self.log_path, "wb") as log:     # stderr em arquivo: nunca um 3o pipe que pode encher
+            self._proc = procs.spawn(self.argv, stdin=subprocess.PIPE, stdout=stdout, stderr=log, bufsize=0)
+        self._started = time.monotonic()
+        if self.with_preview:
+            self._reader = FrameReader(self._proc.stdout)
+            self._reader.start()
+
+    @property
+    def pid(self) -> int | None:
+        return self._proc.pid if self._proc else None
+
+    @property
+    def running(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    @property
+    def started_monotonic(self) -> float | None:
+        return self._started
+
+    @property
+    def last_frame_monotonic(self) -> float | None:
+        return self._reader.last_frame_monotonic if self._reader else None
+
+    def early_failure(self) -> str | None:
+        # nao bloqueia; saida sem pedido de parada = falha (camera ocupada, sumiu, no errado...)
+        if self._proc is None or self._stop_requested:
+            return None
+        rc = self._proc.poll()
+        if rc is None:
+            return None
+        return procs.ffmpeg_exit_message(rc, procs.tail(self.log_path))
+
+    def latest_frame(self) -> tuple[int, bytes | None]:
+        return self._reader.latest() if self._reader else (0, None)
+
+    def fps_measured(self) -> float | None:
+        return self._reader.fps() if self._reader else None
+
+    def request_stop(self) -> None:
+        with self._lock:
+            if self._proc is None or self._stop_requested:
+                return
+            self._stop_requested = True
+        try:
+            self._proc.stdin.write(b"q\n")
+        except (OSError, ValueError):
+            pass        # ja saiu (pipe quebrado)
+
+    def wait_stopped(self, t_q: float = 5, t_close: float = 3, t_term: float = 3) -> int:
+        # bloqueante: rodar numa thread de trabalho; o leitor continua drenando ate o EOF
+        p = self._proc
+        if p is None:
+            raise RuntimeError("captura não iniciada")
+        self.request_stop()
+        steps = ["q"]
+        rc = _wait(p, t_q)
+        if rc is None:
+            steps.append("close")       # leitor parado: o EPIPE solta o ffmpeg preso no pipe (rc 224)
+            _close(p.stdout)
+            rc = _wait(p, t_close)
+        if rc is None:
+            steps.append("term")
+            p.terminate()
+            rc = _wait(p, t_term)
+        if rc is None:
+            steps.append("kill")
+            p.kill()
+            rc = p.wait()
+        self.stop_steps = steps
+        if self._reader:
+            self._reader.join(timeout=2)
+        _close(p.stdin)
+        return rc
