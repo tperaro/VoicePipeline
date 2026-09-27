@@ -106,6 +106,14 @@ class EnviarDriveCliTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("só vídeos *_IA.mp4", r.stdout)
 
+    def test_file_outside_videos_dir_is_refused(self):
+        outside = os.path.join(self.tmp, NAMES[0])
+        shutil.copy2(self.template, outside)
+        r = self.cli("--pasta", LINK, "--arquivo", outside)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(f"{NAMES[0]}: FALHOU — {NAMES[0]}: fora de videos_finais/", r.stdout)
+        self.assertEqual(self.remote_files(), [])
+
     def test_preflight_errors_exit_1(self):
         self.cli("--pasta", LINK, "--dry-run")
         env = {**self.env, "PATH": "/usr/bin:/bin", "HOME": self.tmp}

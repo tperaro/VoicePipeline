@@ -19,7 +19,9 @@ FAKEBIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fakebin")
 FID = "1AbCdEfGhIjKlMnOpQrStUvWxYz012345"
 LINK = f"https://drive.google.com/drive/folders/{FID}?usp=sharing"
 COMMENT = "Voz sintética gerada por IA (conversão RVC). Não é a voz real de Silvio Santos."
-NAMES = ("2026-09-26_101500_silvio_IA.mp4", "2026-09-26_101700_orochi_IA.mp4")
+OROCHI_COMMENT = "Voz sintética gerada por IA (conversão RVC). Não é a voz real do Orochi."
+# os dois do Silvio: o MP4 modelo leva o aviso do Silvio, e check_uploadable exige o aviso exato do modelo do nome
+NAMES = ("2026-09-26_101500_silvio_IA.mp4", "2026-09-26_101700_silvio_IA.mp4")
 
 
 def make_mp4(path: str, comment: str | None = COMMENT, duration: float = 0.3) -> str:
@@ -67,17 +69,28 @@ class CheckUploadableTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        d = cls.tmp.name
+        d = cls.videos = cls.tmp.name              # a pasta dos testes faz o papel de videos_finais/
         cls.good = make_mp4(os.path.join(d, NAMES[0]))
         cls.no_comment = make_mp4(os.path.join(d, "2026-09-26_101600_silvio_IA.mp4"), comment=None)
         cls.other_comment = make_mp4(os.path.join(d, "2026-09-26_101601_silvio_IA.mp4"), comment="feito em casa")
         cls.junk = os.path.join(d, "2026-09-26_101602_silvio_IA.mp4")
         with open(cls.junk, "wb") as f:
             f.write(b"isto nao e um video" * 100)
+        cls.media = make_mp4(os.path.join(d, "2026-09-26_101603_silvio_IA.mp4"), comment="MEDIA")
+        cls.orochi = make_mp4(os.path.join(d, "2026-09-26_101604_orochi_IA.mp4"), comment=OROCHI_COMMENT)
+        cls.orochi_with_silvio = make_mp4(os.path.join(d, "2026-09-26_101605_orochi_IA.mp4"))
+        cls.outside_dir = tempfile.TemporaryDirectory()
+        cls.outside = make_mp4(os.path.join(cls.outside_dir.name, NAMES[0]))
+        cls.link = os.path.join(d, "2026-09-26_101606_silvio_IA.mp4")
+        os.symlink(cls.outside, cls.link)
 
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
+        cls.outside_dir.cleanup()
+
+    def check(self, path: str) -> str | None:
+        return drive.check_uploadable(path, self.videos)
 
     def copy_as(self, name: str) -> str:
         path = os.path.join(self.tmp.name, name)
@@ -85,23 +98,36 @@ class CheckUploadableTest(unittest.TestCase):
         return path
 
     def test_ok(self):
-        self.assertIsNone(drive.check_uploadable(self.good))
+        self.assertIsNone(self.check(self.good))
+        self.assertIsNone(self.check(self.orochi))
 
     def test_part_and_name(self):
         for name in (NAMES[0] + ".part", "render.part.mp4", "x.part.y_IA.mp4"):
             with self.subTest(name=name):
-                self.assertIn("arquivo incompleto (.part)", drive.check_uploadable(self.copy_as(name)))
-        self.assertIn("só vídeos *_IA.mp4", drive.check_uploadable(self.copy_as("video.mp4")))
+                self.assertIn("arquivo incompleto (.part)", self.check(self.copy_as(name)))
+        self.assertIn("só vídeos *_IA.mp4", self.check(self.copy_as("video.mp4")))
+        for name in ("x_IA.mp4", "2026-09-26_101500_xyz_IA.mp4"):
+            with self.subTest(name=name):
+                self.assertEqual(self.check(self.copy_as(name)),
+                                 f"{name}: nome sem um modelo conhecido (<tomada>_<modelo>_IA.mp4) — não é enviado")
 
     def test_missing(self):
         path = os.path.join(self.tmp.name, "2026-01-01_000000_silvio_IA.mp4")
-        self.assertEqual(drive.check_uploadable(path), "2026-01-01_000000_silvio_IA.mp4: arquivo não encontrado")
+        self.assertEqual(self.check(path), "2026-01-01_000000_silvio_IA.mp4: arquivo não encontrado")
 
     def test_fail_closed_on_metadata(self):
-        for path in (self.no_comment, self.other_comment):
-            with self.subTest(path=path):
-                self.assertIn("sem o aviso de IA nos metadados", drive.check_uploadable(path))
-        self.assertIn("vídeo ilegível", drive.check_uploadable(self.junk))
+        # so o aviso exato do modelo do nome: "MEDIA" tem "IA", e o aviso do Silvio num video do Orochi nao serve
+        for path in (self.no_comment, self.other_comment, self.media, self.orochi_with_silvio):
+            with self.subTest(path=os.path.basename(path)):
+                self.assertIn("sem o aviso de IA nos metadados", self.check(path))
+        self.assertIn("vídeo ilegível", self.check(self.junk))
+
+    def test_only_from_videos_dir(self):
+        # o enviar_drive.py --arquivo aceita qualquer caminho: fora de videos_finais/ (ou symlink) nao sai
+        want = f"{NAMES[0]}: fora de videos_finais/ — só vídeos gerados pelo app são enviados"
+        self.assertEqual(self.check(self.outside), want)
+        self.assertEqual(drive.check_uploadable(self.good), want)     # padrao: o videos_finais/ do projeto
+        self.assertIn("fora de videos_finais/", self.check(self.link))
 
 
 class Md5AndListTest(unittest.TestCase):
@@ -248,6 +274,15 @@ class UploadFilesTest(unittest.TestCase):
         self.assertFalse(results[0]["ok"])
         self.assertTrue(results[1]["ok"])
         self.assertEqual([argv[1] for argv in self.copy_calls()], [self.paths[0]])
+
+    def test_video_outside_videos_dir_never_reaches_rclone(self):
+        outside = os.path.join(self.tmp, NAMES[0])          # mesmo nome, fora de videos_finais/
+        shutil.copy2(self.template, outside)
+        results = self.upload([outside, self.paths[1]])
+        self.assertEqual(results[0]["erro"],
+                         f"{NAMES[0]}: fora de videos_finais/ — só vídeos gerados pelo app são enviados")
+        self.assertTrue(results[1]["ok"])
+        self.assertEqual([argv[1] for argv in self.copy_calls()], [self.paths[1]])
 
     def test_fatal_errors_stop_the_batch(self):
         cases = {"noconfig": drive.MSG_NO_CONFIG, "invalid_grant": drive.MSG_RELOGIN, "quota": drive.MSG_QUOTA}

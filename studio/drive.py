@@ -180,12 +180,27 @@ def _is_part(name: str) -> bool:
     return name.endswith(".part") or ".part." in name
 
 
-def check_uploadable(path: str) -> str | None:
+def _expected_comment(name: str) -> str | None:
+    # o aviso exato que o render grava para o modelo do nome (<tomada>_<modelo>_IA.mp4)
+    parts = split_video_name(name)
+    try:
+        return metadata_tags(get_modelo(parts[1]))["comment"] if parts else None
+    except ValueError:
+        return None
+
+
+def check_uploadable(path: str, videos_dir: str = VIDEOS_DIR) -> str | None:
     name = os.path.basename(path)
     if _is_part(name):
         return f"{name}: arquivo incompleto (.part) — não é enviado"
     if not name.endswith("_IA.mp4"):
         return f"{name}: só vídeos *_IA.mp4 de videos_finais/ são enviados"
+    # fail-closed: so o que o render publicou em videos_finais/ sai da maquina (symlink para fora nao vale)
+    if os.path.dirname(os.path.realpath(path)) != os.path.realpath(videos_dir):
+        return f"{name}: fora de videos_finais/ — só vídeos gerados pelo app são enviados"
+    expected = _expected_comment(name)
+    if expected is None:
+        return f"{name}: nome sem um modelo conhecido (<tomada>_<modelo>_IA.mp4) — não é enviado"
     if not os.path.isfile(path):
         return f"{name}: arquivo não encontrado"
     try:
@@ -194,8 +209,8 @@ def check_uploadable(path: str) -> str | None:
         return f"{name}: vídeo ilegível — não é enviado"
     tags = (data.get("format") or {}).get("tags") or {}
     comment = next((str(v) for k, v in tags.items() if k.lower() == "comment"), "")
-    # fail-closed: sem o aviso de IA nos metadados o video nao sai da maquina
-    if "IA" not in comment:
+    # fail-closed: o comment tem que ser o aviso de IA exato do modelo do nome ("MEDIA" tambem tem "IA")
+    if comment != expected:
         return f"{name}: vídeo sem o aviso de IA nos metadados — não é enviado"
     return None
 
@@ -332,10 +347,10 @@ def _verify(path: str, name: str, folder_id: str, rk: str | None) -> tuple[str, 
 
 
 def _upload_one(path: str, folder_id: str, rk: str | None, on_progress, cancel: threading.Event | None,
-                dry_run: bool) -> dict:
+                dry_run: bool, videos_dir: str) -> dict:
     res = _result(path)
     name = os.path.basename(path)
-    motivo = check_uploadable(path)
+    motivo = check_uploadable(path, videos_dir)
     if motivo:
         res["erro"] = motivo
         return res
@@ -378,7 +393,7 @@ def upload_files(paths: list[str], folder_link: str, on_progress=None, cancel: t
             if fatal:
                 results.append(_result(path, erro=fatal))
                 continue
-            res = _upload_one(path, folder_id, rk, on_progress, cancel, dry_run)
+            res = _upload_one(path, folder_id, rk, on_progress, cancel, dry_run, videos_dir)
             results.append(res)
             if res["erro"] in FATAL_MSGS:
                 fatal = res["erro"]
