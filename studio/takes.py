@@ -100,8 +100,17 @@ def list_takes(rec_dir: str = REC_DIR) -> list[Take]:
     return sorted(found, key=lambda t: _sort_key(t.id))
 
 
-def latest_take(rec_dir: str = REC_DIR) -> Take | None:
-    found = list_takes(rec_dir)
+USABLE_STATUS = ("gravado", "convertido", "renderizado")
+
+
+def is_usable(take: Take) -> bool:
+    # da para converter/gerar/enviar: a gravacao terminou bem e o arquivo bruto esta no disco
+    return take.status in USABLE_STATUS and os.path.isfile(take.raw_path)
+
+
+def latest_take(rec_dir: str = REC_DIR, usable_only: bool = False) -> Take | None:
+    # usable_only: a abertura do app pula tomada que falhou (ex.: camera em uso) e mostra a boa anterior
+    found = [t for t in list_takes(rec_dir) if not usable_only or is_usable(t)]
     return found[-1] if found else None
 
 

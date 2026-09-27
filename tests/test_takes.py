@@ -243,5 +243,41 @@ class RecoverTest(unittest.TestCase):
         self.assertEqual(os.stat(t.path("take.json")).st_mtime_ns, mtime)
 
 
+class LatestUsableTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.rec = os.path.join(tmp.name, "recordings")
+
+    def make(self, hhmmss: str, status: str, raw: bool = True, modo: str = "audio") -> takes.Take:
+        now = datetime.strptime(f"2026-09-26 {hhmmss}", "%Y-%m-%d %H%M%S")
+        t = takes.new_take(modo, "m", "c" if modo == "av" else "", rec_dir=self.rec, now=now)
+        t.status = status
+        t.save()
+        if raw:
+            open(t.raw_path, "wb").close()
+        return t
+
+    def test_usable_only_skips_failed_and_unfinished(self):
+        good = self.make("100000", "convertido")
+        self.make("110000", "falhou", raw=False)        # camera em uso: a gravacao nem comecou
+        self.make("120000", "falhou")                   # gravacao curta demais
+        self.make("130000", "gravado", raw=False)       # raw apagado a mao
+        self.make("140000", "gravando")                 # a recuperacao nao conseguiu mexer nela
+        self.assertEqual(takes.latest_take(self.rec).id, "2026-09-26_140000")
+        self.assertEqual(takes.latest_take(self.rec, usable_only=True), good)
+
+    def test_usable_statuses(self):
+        self.assertEqual(takes.USABLE_STATUS, ("gravado", "convertido", "renderizado"))
+        for i, status in enumerate(takes.STATUS):
+            t = self.make(f"10000{i}", status, modo="av")
+            self.assertEqual(takes.is_usable(t), status in takes.USABLE_STATUS, status)
+
+    def test_nothing_usable(self):
+        self.make("110000", "falhou")
+        self.assertIsNone(takes.latest_take(self.rec, usable_only=True))
+        self.assertIsNone(takes.latest_take(os.path.join(self.rec, "nao_existe"), usable_only=True))
+
+
 if __name__ == "__main__":
     unittest.main()
