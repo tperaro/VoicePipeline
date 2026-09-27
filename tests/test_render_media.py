@@ -277,5 +277,50 @@ class RenderFinalTest(unittest.TestCase):
         self.assert_nothing_published("timeout")
 
 
+class ShortTakeTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.rec = os.path.join(cls.tmp.name, "recordings")
+        cls.videos = os.path.join(cls.tmp.name, "videos_finais")
+        cls.conv = os.path.join(cls.tmp.name, "silvio.wav")
+        ffmpeg("-f", "lavfi", "-i", "aevalsrc=0:s=40000:c=mono:d=0.2", "-c:a", "pcm_s16le", cls.conv)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def take_with_frames(self, frames: int):
+        # MKV como o do gravador (MJPEG + PCM mono 48k), so com `frames` pacotes de video
+        take = new_take("av", mic="fake", rec_dir=self.rec)
+        d = f"{frames / FPS:.6f}"
+        ffmpeg("-f", "lavfi", "-i", f"testsrc2=s=320x240:r={FPS}:d={d}", "-f", "lavfi",
+               "-i", f"aevalsrc=0:s=48000:c=mono:d={d}", "-c:v", "mjpeg", "-pix_fmt", "yuvj422p",
+               "-c:a", "pcm_s16le", "-f", "matroska", take.raw_path)
+        self.assertEqual(len(timeline.read_packets(take.raw_path, "v")), frames)
+        return take
+
+    def test_one_or_two_packets_is_too_short(self):
+        # duplo clique em Gravar: o q chega antes do 3o frame; com 2 pacotes sairia um MP4 de 1 frame (33 ms)
+        for frames in (1, 2):
+            take = self.take_with_frames(frames)
+            with_video = dataclasses.replace(take, video=dataclasses.asdict(timeline.video_info(take.raw_path)))
+            for t in (take, with_video):
+                with self.subTest(frames=frames, take_video=bool(t.video)), \
+                        mock.patch.object(procs, "spawn", wraps=procs.spawn) as spawn:
+                    with self.assertRaises(RenderError) as cm:
+                        render.render_final(t, SILVIO, self.conv, videos_dir=self.videos)
+                    self.assertEqual(str(cm.exception), "Gravação curta demais para gerar o vídeo")
+                    self.assertFalse([c for c in spawn.call_args_list if "-filter_complex" in c.args[0]])
+        self.assertEqual(listdir(self.videos), [])
+
+    def test_three_packets_give_two_frames(self):
+        take = self.take_with_frames(3)
+        mp4 = render.render_final(take, SILVIO, self.conv, videos_dir=os.path.join(self.tmp.name, "videos_3"))
+        self.assertEqual(os.path.basename(mp4), final_video_name(take.id, "silvio"))
+        video = [s for s in probe(mp4)["streams"] if s["codec_type"] == "video"][0]
+        self.assertEqual(int(video["nb_read_packets"]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

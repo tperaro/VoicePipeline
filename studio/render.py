@@ -28,6 +28,8 @@ ENCODER_FLAGS = {
 PART_NAME = "render.part.mp4"
 LOG_NAME = "render.log"
 CANCEL_MSG = "Render cancelado"
+MIN_FRAMES = 2                              # o video comeca no 2o frame (ancora): 1 frame so nao e video
+MSG_SHORT = "Gravação curta demais para gerar o vídeo"
 POLL_S = 0.1
 STOP_WAIT_S = 5.0
 DECODE_TIMEOUT_S = 60.0
@@ -291,6 +293,8 @@ def render_final(take: Take, modelo: Modelo, conv_wav: str, av_offset_ms: int = 
     if not os.path.isfile(conv_wav):
         raise RenderError("Áudio convertido não encontrado — converta a voz de novo")
     vi = _video_info(take)
+    if vi.n_frames < MIN_FRAMES:
+        raise RenderError(MSG_SHORT)        # antes do ffmpeg: com 1 pacote saia "0 faixa(s) de vídeo"
     w, h = _frame_size(take.raw_path)
     try:
         wm = watermark.watermark_path(take.dir, w, h, modelo)
