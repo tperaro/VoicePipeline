@@ -135,6 +135,9 @@ class HelpersTest(unittest.TestCase):
         band = (0, 200, 480, 270)
         self.assertNotEqual(img.crop(band).tobytes(), other.crop(band).tobytes())   # aviso muda por modelo
 
+    def test_min_rec_s(self):
+        self.assertEqual(1.0, gui_capture.MIN_REC_S)
+
     def test_finish_capture_missing_file(self):
         with tempfile.TemporaryDirectory() as d:
             res = gui_capture.finish_capture(os.path.join(d, "raw.mkv"), True, os.path.join(d, "audio.wav"))
@@ -176,7 +179,8 @@ class CapturePanelTest(unittest.TestCase):
         self.fail_next = None
         self.confirm_calls: list[tuple[str, str]] = []
         self.confirm_answer = False
-        patcher = mock.patch.multiple(gui_capture, TICK_MS=20, WATCH_MS=40, MIC_CHECK_S=0.2)
+        # MIN_REC_S=0: os testes que nao sao do duplo clique podem parar logo depois do 1o frame
+        patcher = mock.patch.multiple(gui_capture, TICK_MS=20, WATCH_MS=40, MIC_CHECK_S=0.2, MIN_REC_S=0)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -396,6 +400,8 @@ class CapturePanelTest(unittest.TestCase):
         p.cam_check.invoke()
         take, rec = self.start_recording(app)
         rec.push(RED)
+        # o Parar so libera quando o tick ve o 1o frame
+        self.assertTrue(pump_until(app, lambda: str(p.btn_record.cget("state")) == "normal"))
         p.btn_record.invoke()                         # Parar
         self.assertEqual("stopping", p.state)
         self.assertTrue(rec.stop_requested)
@@ -466,6 +472,49 @@ class CapturePanelTest(unittest.TestCase):
                 self.assertEqual("idle", p.state)
                 self.assertEqual([], list_takes(self.rec_dir))
                 self.assertEqual([], self.caps)
+
+    def test_double_click_does_not_stop_recording(self):
+        # duplo clique em Gravar: o 2o clique cai no Parar desabilitado (MIN_REC_S e, no A/V, o 1o frame)
+        app = self.make_app()
+        p = app.capture_panel
+        with mock.patch.object(gui_capture, "MIN_REC_S", 0.3):
+            p.btn_record.invoke()
+            p.btn_record.invoke()
+            self.assertEqual("recording", p.state)
+            self.assertEqual(("■ Parar", "disabled"), (p.btn_record.cget("text"), str(p.btn_record.cget("state"))))
+            rec = self.caps[-1]
+            pump_for(app, 0.45)                       # passou do MIN_REC_S, mas sem frame: continua travado
+            p.btn_record.invoke()
+            self.assertEqual(("recording", "disabled"), (p.state, str(p.btn_record.cget("state"))))
+            rec.push(RED)
+            self.assertTrue(pump_until(app, lambda: str(p.btn_record.cget("state")) == "normal"))
+            p.btn_record.invoke()
+            self.assertEqual("stopping", p.state)
+        self.wait_idle(app)
+        self.assertEqual("gravado", app.take.status)
+
+    def test_audio_only_stop_waits_min_rec_s(self):
+        app = self.make_app({"gravar_video": False})
+        p = app.capture_panel
+        with mock.patch.object(gui_capture, "MIN_REC_S", 0.3):
+            p.btn_record.invoke()
+            p.btn_record.invoke()
+            self.assertEqual(("recording", "disabled"), (p.state, str(p.btn_record.cget("state"))))
+            self.assertTrue(pump_until(app, lambda: str(p.btn_record.cget("state")) == "normal"))
+            self.assertGreaterEqual(time.monotonic() - self.caps[-1].started_monotonic, 0.3)
+            p.btn_record.invoke()
+            self.assertEqual("stopping", p.state)
+        self.wait_idle(app)
+        self.assertEqual("gravado", app.take.status)
+
+    def test_duration_below_min_rec_s_is_refused(self):
+        app = self.make_app({"gravar_video": False})
+        p = app.capture_panel
+        p.duration_var.set("0,5")
+        with mock.patch.object(gui_capture, "MIN_REC_S", 1.0):
+            p.btn_record.invoke()
+        self.assertIn("Não foi possível gravar: Gravação curta demais (mínimo 1 s)", self.log_text(app))
+        self.assertEqual(("idle", [], []), (p.state, list_takes(self.rec_dir), self.caps))
 
     def test_early_failure_shows_message_and_goes_back_to_idle(self):
         app = self.make_app()

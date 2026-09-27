@@ -37,6 +37,7 @@ WATCH_MS = 500            # falha rapida, watchdog de frames e agenda da checage
 MIC_CHECK_S = 2.0         # a 1a checagem sai 2 s depois do inicio (o pactl leva ~1,2 s para ver o gravador)
 PREVIEW_IDLE_S = 300      # preview sem uso por 5 min: desliga (Meet/Zoom nao ficam bloqueados)
 REC_AUDIO_S = 0.5         # so-audio nao tem frame: o REC acende quando passa da falha rapida
+MIN_REC_S = 1.0           # o Parar so libera 1 s depois do inicio (e, no A/V, depois do 1o frame): duplo clique
 SHUTDOWN_WAIT_S = 5.0
 MUTE_DB = -45.0
 PREVIEW_LOG = "preview.log"
@@ -136,6 +137,7 @@ class CapturePanel:
         self._last_activity = time.monotonic()
         self._rec_started = 0.0
         self._rec_elapsed = 0.0
+        self._stop_ready = False                # Parar liberado (MIN_REC_S e, no A/V, o 1o frame)
         self._next_mic_check = 0.0
         self._mic_pending = False
         self._failure: str | None = None
@@ -336,7 +338,8 @@ class CapturePanel:
 
     def on_record(self) -> None:
         if self.state == RECORDING:
-            self.stop_recording()
+            if self._stop_ready:              # o botao fica desabilitado ate la; isto e so a garantia
+                self.stop_recording()
             return
         if self.state != IDLE or self.app.closing:
             return
@@ -365,6 +368,8 @@ class CapturePanel:
             duration = parse_duration(self.duration_var.get())
         except ValueError as e:
             return None, str(e)
+        if duration is not None and duration < MIN_REC_S:
+            return None, f"{capture.MSG_SHORT} (mínimo {_dec(MIN_REC_S, 'g')} s)"
         av = bool(self.video_on.get())
         mic = self.mic_var.get()
         index = next((s.index for s in self.hw.list_mics() if s.name == mic), None)
@@ -397,6 +402,7 @@ class CapturePanel:
             return
         self.rec = cap
         self.state = RECORDING
+        self._stop_ready = False              # o tick libera o Parar (MIN_REC_S e, no A/V, o 1o frame)
         self._rec_started = time.monotonic()
         self._next_mic_check = self._rec_started + MIC_CHECK_S
         self._mic_pending = False
@@ -487,6 +493,9 @@ class CapturePanel:
             lit = seq > 0 if self._plan["av"] else now - self._rec_started >= REC_AUDIO_S
             if lit and str(self.rec_label.cget("foreground")) != COLOR_REC_ON:
                 self._set_rec_lit(True)
+            if not self._stop_ready and now - self._rec_started >= MIN_REC_S and (seq > 0 or not self._plan["av"]):
+                self._stop_ready = True           # duplo clique em Gravar nao para a gravacao
+                self._refresh_controls()
         if self.preview is not None and now - self._last_activity > PREVIEW_IDLE_S:
             self.app.log(f"Câmera desligada após {PREVIEW_IDLE_S / 60:g} min sem uso "
                          "(marque \"Câmera ligada\" para voltar)")
@@ -684,6 +693,6 @@ class CapturePanel:
         for w in (self.video_check, self.duration_entry):
             w.configure(state="normal" if idle else "disabled")
         if self.state == RECORDING:
-            self.btn_record.configure(text=TXT_STOP, state="normal")
+            self.btn_record.configure(text=TXT_STOP, state="normal" if self._stop_ready else "disabled")
         else:
             self.btn_record.configure(text=TXT_RECORD, state="normal" if idle else "disabled")
