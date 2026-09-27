@@ -809,6 +809,35 @@ class PipelinePanelTest(unittest.TestCase):
         self.assertEqual(100, float(p.progress.cget("value")))
         self.assertIn("Enviado", p.drive_label.cget("text"))
 
+    def test_upload_reads_folder_from_file_on_click(self):
+        # enviar_drive.py --pasta com o app aberto: o Enviar manda para a pasta do arquivo, nao a da memoria
+        take = self.make_take()
+        final = self.converted(take, mp4=True)
+        app = self.make_app({"drive_pasta": LINK})
+        p = app.pipeline_panel
+        other = f"https://drive.google.com/drive/folders/{FOLDER_ID}Z"
+        with open(self.estado_path, encoding="utf-8") as f:
+            estado = json.load(f)
+        estado["drive_pasta"] = other
+        with open(self.estado_path, "w", encoding="utf-8") as f:
+            json.dump(estado, f)
+        p.btn_upload.invoke()
+        self.wait_done(app)
+        self.assertEqual([(final, other)], [(c.paths[0], c.link) for c in self.upload.calls])
+        self.assertEqual(other, app.estado["drive_pasta"])
+        self.assertIn(f"{FOLDER_ID}Z", p.drive_label.cget("text"))
+        # arquivo corrompido ou com tipo errado: fica com o link da memoria (e avisa)
+        for text, aviso in (("{quebrado", "estado.json corrompido — usando padrões"),
+                            ('{"drive_pasta": 123}', "estado.json: valor inválido em drive_pasta")):
+            with open(self.estado_path, "w", encoding="utf-8") as f:
+                f.write(text)
+            p.btn_upload.invoke()
+            self.wait_done(app)
+            self.assertEqual(other, self.upload.calls[-1].link)
+            self.assertIn(f"AVISO: {aviso}", self.log_text(app))
+        self.assertEqual(3, len(self.upload.calls))
+        self.assertEqual([], self.asked)
+
     def test_upload_click_during_dialog_sends_once(self):
         # o dialogo do link roda o laco de eventos: um 2o clique em Enviar nao pode enfileirar outro envio
         take = self.make_take()

@@ -250,6 +250,17 @@ class PipelinePanel:
             self.app.log(f"AVISO: {aviso}")
         return estado["av_offset_ms"]           # o load_estado ja garante int
 
+    def _drive_link(self) -> str:
+        # le o arquivo no clique: o enviar_drive.py --pasta pode ter trocado a pasta com o app aberto;
+        # arquivo corrompido/ilegivel (ou sem link) fica com o da memoria
+        estado, aviso = load_estado(self.app.estado_path)
+        if aviso:
+            self.app.log(f"AVISO: {aviso}")
+        link = estado["drive_pasta"] or self.app.estado.get("drive_pasta") or ""
+        if link:
+            self.app.estado["drive_pasta"] = link    # o rotulo do Drive mostra a pasta que vai receber
+        return link
+
     # ---------- botoes e rotulos ----------
 
     def refresh(self) -> None:
@@ -587,7 +598,7 @@ class PipelinePanel:
         mp4 = self._output(take, m, "mp4")
         if self.uploading is not None or mp4 is None:
             return
-        link = self.app.estado.get("drive_pasta") or self.configure_drive()
+        link = self._drive_link() or self.configure_drive()
         # o dialogo do link roda o laco de eventos: um 2o clique pode ter comecado um envio enquanto isso
         if not link or self.uploading is not None:
             return
