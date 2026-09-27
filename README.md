@@ -59,41 +59,65 @@ Com uma conversão, um vídeo sendo gerado ou um envio em andamento, o app tamb�
 
 O app alinha a voz à imagem pelo relógio do sistema (erro de até 1 frame nos testes). A câmera e o microfone, porém,
 têm atrasos internos que só uma medida real mostra. A correção é o `av_offset_ms` do `estado.json`, aplicado na
-hora de gerar o vídeo. Calibre uma vez, e de novo se trocar de câmera ou de microfone:
+hora de gerar o vídeo. Calibre uma vez, e de novo se trocar de câmera ou de microfone.
 
-1. Se puder, deixe a câmera a 30 fps (veja "fps baixo" em "Solução de problemas") e acenda a luz.
-2. Grave uma tomada **com vídeo** de uns 15 s. Deixe as mãos inteiras no quadro e bata **pelo menos 5 palmas**
-   secas, com uns 2 s entre elas. Depois de cada palma, deixe as mãos juntas por um instante e só então afaste-as
-   **devagar**. Não fale durante a tomada.
-3. No terminal, na pasta do projeto (o app pode ficar aberto: ele não desfaz o valor salvo e lê o `av_offset_ms` na
-   hora de gerar o vídeo):
+### 1. Preparar a câmera
 
-   ```bash
-   Applio/.venv/bin/python calibrar_av.py recordings/AAAA-MM-DD_HHMMSS
-   ```
+Se puder, deixe a câmera a 30 fps (veja "fps baixo" em "Solução de problemas") e acenda a luz.
 
-   O script mostra uma linha por palma (áudio, vídeo e a diferença) e, no fim, algo como:
+### 2. Gravar as palmas
 
-   ```text
-   av_offset_ms sugerido: -80 ms (mediana de 6 palmas; dispersão ±1,9 ms; de -82 a -78)
-   Positivo = áudio mais tarde. A medida é feita sem offset: o valor substitui o atual.
-   Confiança: alta
-   ```
+Grave uma tomada **com vídeo** de uns 15 s, com as mãos inteiras no quadro, e bata **pelo menos 5 palmas**,
+todas deste jeito:
 
-4. Se a confiança for **alta** ou **média**, grave o valor:
+- comece com as mãos **afastadas e paradas**;
+- bata uma palma seca;
+- deixe as mãos juntas só por um instante e afaste-as **devagar**;
+- espere uns 2 s com as mãos **afastadas e paradas** antes da próxima palma.
 
-   ```bash
-   Applio/.venv/bin/python calibrar_av.py recordings/AAAA-MM-DD_HHMMSS --salvar
-   ```
+Nunca descanse com as mãos juntas entre as palmas, e não "abra e bata" (abrir as mãos, parar e logo bater): a
+ferramenta pode tomar essa parada pelo contato. Não fale durante a tomada.
 
-   Ele só grava com pelo menos 5 palmas vistas no vídeo e confiança alta ou média. Com confiança baixa, ele recusa
-   e não mexe no `estado.json`.
-5. Para conferir, grave uma tomada nova falando, converta e assista ao vídeo. O novo offset vale para os vídeos
-   gerados daqui em diante. Um vídeo antigo só muda se você clicar **Gerar vídeo** com a tomada dele aberta.
+### 3. Medir
+
+No terminal, na pasta do projeto (o app pode ficar aberto: ele não desfaz o valor salvo e lê o `av_offset_ms` na
+hora de gerar o vídeo):
+
+```bash
+Applio/.venv/bin/python calibrar_av.py recordings/AAAA-MM-DD_HHMMSS
+```
+
+O script mostra uma linha por palma (áudio, vídeo e a diferença) e, no fim, algo como:
+
+```text
+av_offset_ms sugerido: -80 ms (mediana de 6 palmas; dispersão ±1,9 ms; de -82 a -78)
+Positivo = áudio mais tarde. A medida é feita sem offset: o valor substitui o atual.
+Confiança: alta
+```
+
+Confira a tabela: se os offsets das palmas discordam entre si, ou se você não bateu as palmas do jeito do passo 2,
+grave a tomada de novo.
+
+### 4. Salvar o valor
+
+Se a confiança for **alta** ou **média**, grave o valor:
+
+```bash
+Applio/.venv/bin/python calibrar_av.py recordings/AAAA-MM-DD_HHMMSS --salvar
+```
+
+Ele só grava com pelo menos 5 palmas vistas no vídeo e confiança alta ou média. Com confiança baixa, ele recusa e
+não mexe no `estado.json`.
+
+### 5. Conferir
+
+Grave uma tomada nova **com vídeo** falando, converta e assista ao vídeo. O novo offset vale para os vídeos gerados
+daqui em diante. Um vídeo antigo só muda se você clicar **Gerar vídeo** com a tomada dele aberta.
+
+### Confiança e outras observações
 
 - **Confiança baixa:** poucas palmas vistas, ou palmas discordando entre si (dispersão acima de 15 ms, ou menos de
-  80 % delas perto da mediana). Refaça com mais luz, as mãos inteiras no quadro e palmas mais secas, parando as mãos
-  depois de cada uma. Palmas muito juntas também são descartadas: deixe uns 2 s entre elas.
+  80 % delas perto da mediana). Refaça com mais luz, as mãos inteiras no quadro e as palmas do jeito do passo 2.
 - **Confiança média:** a câmera estava abaixo de 20 fps. O valor serve, mas a 30 fps a medida fica mais firme.
 - **Aviso de offset acima de 200 ms:** câmera e microfone USB costumam ficar abaixo disso. Confira as palmas na
   tabela e, na dúvida, grave outra tomada. O aviso não muda a confiança: um atraso real desse tamanho pode ser salvo.
