@@ -1,7 +1,7 @@
 # Voice Studio v2 — vídeo da webcam com voz trocada por IA, marca d'água e envio pro Drive
 
 - **Data:** 2026-09-26
-- **Status:** desenho aprovado em conversa; esta spec aguarda revisão
+- **Status:** aprovada em 26/09/2026. Emendada no mesmo dia depois da revisão do plano de implementação (ver seção 15)
 - **Evidência:** os testes feitos nesta máquina (webcam, microfone, GPU, modelo silvio_350e) estão em
   `docs/superpowers/probes/2026-09-26/`. Os relatórios completos ficam em `relatorios/`.
   Marcação usada nesta spec: **[V]** = medido/rodado aqui; **[I]** = inferido (docs/código), não rodado.
@@ -121,6 +121,9 @@ studio.log                  log técnico (tracebacks, stderr resumido dos proces
 
 - A escrita é atômica: grava em `.tmp` e depois faz `os.replace`.
 - Só a thread principal da GUI (ou a CLI) altera o `take.json`.
+- Um erro de conversão ou de vídeo fica **por modelo**, em `saidas[<modelo>]["erro"]`, e um sucesso posterior o
+  apaga. O status `"falhou"` fica reservado para a gravação (ou para o áudio ilegível de uma tomada recuperada).
+- Se o `take.json` não puder ser gravado (ex.: disco cheio), a mudança é desfeita na memória e nada segue.
 
 ## 4. Configuração
 
@@ -129,8 +132,12 @@ studio.log                  log técnico (tracebacks, stderr resumido dos proces
   - `orochi`: rótulo "Orochi", aviso "Não é a voz real do Orochi"
 - Os textos fixos também ficam no código: "VOZ GERADA POR IA", "paródia · homenagem", e os metadados em PT e EN.
 - `render()` **recusa** gerar vídeo sem texto de aviso para o modelo.
-- `estado.json` é escrito pela GUI com gravação atômica. Se estiver corrompido, o app mostra um aviso e usa
-  os defaults, sem cair. Os campos são:
+- `estado.json` é escrito pela GUI, por `calibrar_av.py --salvar` e por `enviar_drive.py --pasta`, sempre com
+  gravação atômica e **só das chaves alteradas**: quem grava relê o arquivo e mescla. Assim um programa não
+  desfaz o que outro gravou com o app aberto.
+- Se o arquivo estiver corrompido, o app mostra um aviso e usa os defaults, sem cair. Antes de gravar por cima,
+  o arquivo quebrado é preservado como `estado.json.corrompido`. Um valor de tipo errado (ex.:
+  `"drive_pasta": 123`) volta para o default, com aviso. Os campos são:
   - mic
   - câmera
   - `gravar_video`
@@ -215,13 +222,19 @@ studio.log                  log técnico (tracebacks, stderr resumido dos proces
    | 231 | "Dispositivo de vídeo errado" |
 
 4. **Indicador REC:** só acende quando chega o 1º frame. O início leva de 0,44 s a 1,2 s [V].
+   - **Parar** fica desabilitado por 1 s depois do início e, no A/V, até chegar o 1º frame (o que vier por
+     último). Assim um duplo clique em Gravar não para a gravação na hora. A duração mínima é 1 s.
+   - Uma gravação A/V com menos de 3 pacotes de vídeo é recusada com "Gravação curta demais".
 5. **Microfone certo:**
-   - Após ~1 s, e depois a cada 2 s, o app roda `LC_ALL=C pactl list source-outputs`.
+   - Após ~2 s, e depois a cada 2 s, o app roda `LC_ALL=C pactl list source-outputs`. O gravador só aparece
+     no `pactl` depois de ~1,2 s.
    - No bloco com `application.process.id == pid`, confere se `Source:` corresponde ao índice do microfone
      escolhido.
    - O `setpriv` executa o ffmpeg no mesmo processo, então o pid é o do ffmpeg.
-   - Se o índice não bater ou sumir, o app para e mostra "Microfone desconectado ou trocado". Um nome inválido
-     grava do mic padrão sem erro [V].
+   - Se o índice não bater ou sumir em **2 checagens seguidas**, o app para e mostra "Microfone desconectado ou
+     trocado". Um nome inválido grava do mic padrão sem erro [V].
+   - Se o próprio `pactl` falhar ou estourar o tempo, o resultado é "não sei": o app registra um aviso no log
+     e **não** para a gravação.
 6. **Câmera parada:** se nenhum frame novo chegar por 2 s durante a gravação, o app faz uma parada graciosa e
    mostra "A câmera parou de enviar imagem".
 7. **Limite de duração:** 5 min. Aos 5 min o app para sozinho e avisa, porque o RVC foi validado até 300 s.
@@ -283,7 +296,8 @@ studio.log                  log técnico (tracebacks, stderr resumido dos proces
    `asetrate=<taxa_real arredondada>,aresample=48000:resampler=soxr` [I: filtros padrão; teste unitário
    obrigatório].
 3. Se `gaps > 0`, o caminho passa a ser `aresample=async=1:min_hard_comp=0.03:first_pts=0`, que foi validado
-   num buraco de 0,5 s [V]. O app registra um aviso no log.
+   num buraco de 0,5 s [V]. O app registra no log: "AVISO: o áudio da tomada <id> teve <n> buraco(s) acima de
+   30 ms; o alinhamento usou o modo assíncrono — confira a sincronia".
 4. No teste sintético, bip e flash ficaram alinhados com offset de 0,08 ms (áudio 0,40 s atrasado, 0,25 s
    adiantado, deslocado +5 s, VFR) [V].
 5. O WAV sai mono, 48 kHz, PCM16.
@@ -291,7 +305,8 @@ studio.log                  log técnico (tracebacks, stderr resumido dos proces
 ### 6.4 `av_offset_ms`
 
 - É a correção constante para o atraso interno da câmera e do mic, que é desconhecido.
-- É aplicada **no render**, então mudar o valor não exige converter de novo.
+- É aplicada **no render**, então mudar o valor não exige converter de novo. O render lê o valor do
+  `estado.json` no clique, então calibrar com o app aberto funciona.
 - Valor positivo = áudio mais tarde.
 - A calibração é feita uma vez com palmas diante da câmera: mediana de pelo menos 5 palmas, de preferência
   com boa luz, porque a 15 fps a precisão é ±33 ms.
@@ -395,6 +410,9 @@ studio.log                  log técnico (tracebacks, stderr resumido dos proces
 - **`aresample=48000` explícito:** sem ele o AAC vai sozinho para 44,1 kHz [V].
 - **Fallback:** se o NVENC falhar, troca pelas flags `-c:v libx264 -preset veryfast -crf 20 -maxrate 6M -bufsize 12M -profile:v high` [V].
 - **Timeout:** 5× a duração da tomada + 60 s.
+- **Tomada curta:** com menos de 2 frames úteis, o render recusa com "Gravação curta demais para gerar o vídeo".
+- **Disco:** um erro de disco vira mensagem em PT-BR ("Disco cheio — libere espaço" no ENOSPC), sem deixar
+  `.part` fora da pasta da tomada.
 - **Cancelamento:** botão Cancelar envia SIGTERM.
 - **Desempenho:** NVENC faz 60 s de 720p em ~9,5 s [V].
 
@@ -409,8 +427,8 @@ Antes do `os.replace(render.part.mp4 → videos_finais/<id>_<modelo>_IA.mp4)`, o
    opaco, a luminância de saída precisa ser maior que 200 em pelo menos 95 % deles. Na área da faixa, ela
    precisa ser menor que a da imagem-fonte.
 
-Se qualquer item falhar, o `.part` fica em `recordings/<id>/`, o status vira "falhou" e o motivo aparece em
-PT-BR. **Não existe caminho de código que renderize sem a sobreposição.**
+Se qualquer item falhar, o `.part` fica em `recordings/<id>/`, o erro vai para `saidas[<modelo>]["erro"]` (ver
+3.2) e o motivo aparece em PT-BR. **Não existe caminho de código que renderize sem a sobreposição.**
 
 ## 9. Google Drive
 
@@ -445,7 +463,9 @@ PT-BR. **Não existe caminho de código que renderize sem a sobreposição.**
 
 - O nome casa com `*_IA.mp4`.
 - O arquivo não é `.part`.
-- O `ffprobe` confirma que o `comment` contém "IA". Isso é *fail-closed*.
+- O caminho real (`realpath`) fica dentro de `videos_finais/`.
+- O `ffprobe` confirma que o `comment` é **exatamente** o comentário de IA do modelo tirado do nome. Isso é
+  *fail-closed*: vale também para `enviar_drive.py --arquivo`.
 
 **Comando por arquivo**
 
@@ -513,12 +533,14 @@ PT-BR. **Não existe caminho de código que renderize sem a sobreposição.**
   - microfone, "Gravar vídeo", duração, Gravar/Parar.
 - **Direita:**
   1. Modelo (Carregar modelo)
-  2. Volume
-  3. Converter
+  2. Aumentar volume (ganho em dB, com limitador)
+  3. Converter, com os botões "▶ Ouvir gravação" e "▶ Ouvir resultado" (ficam aqui para economizar altura)
   4. Vídeo: "Gerar vídeo" (automático após converter quando a tomada tem vídeo), status, Assistir, Abrir pasta
-  5. Drive: Enviar, Configurar Drive, Reconectar, barra de progresso, Cancelar
-  - Botões Ouvir gravação e Ouvir resultado.
-- **Embaixo:** o log.
+  5. Drive: Enviar, Configurar Drive, Reconectar, barra de progresso, Cancelar. **Enviar** manda o MP4 da tomada
+     e do modelo que estão na tela. Para mandar todos os de `videos_finais/`, o caminho é `enviar_drive.py`.
+- **Embaixo:** o log. Ele fica com a sobra de altura, para a coluna direita aparecer sempre inteira.
+- Durante a gravação ficam desabilitados Volume, Converter, Gerar vídeo, os dois Ouvir e Assistir, porque o som
+  tocaria nas caixas e entraria no microfone.
 
 **Regras de concorrência**
 
@@ -531,10 +553,13 @@ PT-BR. **Não existe caminho de código que renderize sem a sobreposição.**
 - **Erros não tratados:** `report_callback_exception` e `threading.excepthook` escrevem uma linha curta em
   PT-BR no log e o traceback em `studio.log`.
 - **Fechar a janela:**
-  - Gravando: o app para com `q` e mostra "Finalizando gravação…" antes de fechar.
-  - Com render ou envio em andamento: o app pede confirmação.
+  - Gravando: o app pede confirmação, para com `q` e mostra "Finalizando gravação…" antes de fechar. A tomada
+    é conferida na próxima abertura.
+  - Com conversão, render ou envio em andamento: o app pede confirmação.
 - **Abertura:**
-  - O app carrega a última tomada, para continuar de onde parou.
+  - O app carrega a última tomada **utilizável** (gravado, convertido ou renderizado, com a gravação no
+    disco), para continuar de onde parou. Uma tentativa que falhou ao começar não esconde a tomada boa
+    anterior.
   - Tomadas com status "gravando" são recuperadas: se o `ffprobe` ler o arquivo com duração maior que 0,
     viram "gravado". Se não ler, o app tenta um remux `-c copy`. O resultado vai para o log.
 
@@ -592,3 +617,24 @@ stdlib também rodam com `python3`.
 6. `drive` e `enviar_drive.py`, além da instalação do rclone e do README com o passo a passo.
 7. `gui`: novo layout, fila de eventos, preview e as etapas 4 e 5.
 8. Teste real ponta a ponta e calibração.
+
+## 15. Emendas após a revisão do plano (26/09/2026)
+
+O plano de implementação foi prototipado com testes, e dois revisores o atacaram. As emendas abaixo já estão
+aplicadas no texto acima; esta lista só registra o que mudou em relação à versão aprovada:
+
+- **3.2:** erro de conversão ou de vídeo fica por modelo, em `saidas[<modelo>]["erro"]`; o status "falhou" fica
+  só para a gravação. Se o `take.json` não gravar, nada segue.
+- **4:** `estado.json` gravado por mescla das chaves alteradas (GUI, `calibrar_av.py`, `enviar_drive.py`), com o
+  arquivo corrompido preservado como `.corrompido` e tipos errados voltando ao default.
+- **5.4:** Parar desabilitado por 1 s (e até o 1º frame no A/V); gravação A/V com menos de 3 pacotes recusada.
+- **5.4.5:** 1ª checagem do mic em ~2 s; para só em 2 checagens seguidas; `pactl` sem resposta só gera aviso.
+- **6.3:** texto exato do aviso de buraco no áudio.
+- **6.4:** o render lê `av_offset_ms` do arquivo no clique.
+- **8.2 e 8.3:** tomada curta demais e erro de disco com mensagens em PT-BR; o erro vai para `saidas`.
+- **9.2:** antes de enviar, o arquivo precisa estar dentro de `videos_finais/` e ter o comentário exato de IA.
+- **10:** rótulo "Aumentar volume", botões Ouvir dentro de "Converter", Enviar manda o vídeo da tela, fechar
+  gravando pede confirmação, a abertura carrega a última tomada utilizável e o log absorve a sobra de altura.
+- **Pasta do Drive de destino:** `https://drive.google.com/drive/folders/<ID_DA_PASTA>`. É
+  de outra conta, compartilhada com `<sua conta Google>`, que é a conta do login OAuth do rclone. O
+  link vai no `estado.json`, não no código.
