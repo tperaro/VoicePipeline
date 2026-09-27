@@ -301,5 +301,53 @@ class DiskFullTest(unittest.TestCase):
         self.assertEqual(os.listdir(self.dir), ["audio.wav"])
 
 
+class RunInferRaisesOnFullDiskTest(unittest.TestCase):
+    # Applio nao tem try/except em convert_audio (infer.py:203-356): o sf.write cru de cada pedaco
+    # (infer.py:343) levanta AssertionError (escrita curta) ou SoundFileError/LibsndfileError (open
+    # falho) direto de dentro do run_infer, sem deixar o .wav do pedaco no lugar.
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.inp = write_wav(os.path.join(self.dir, "audio.wav"), speech_like(3.0))
+        self.out = os.path.join(self.dir, "silvio.wav")
+
+    def test_assertionerror_from_run_infer_on_full_disk_is_disco_cheio(self):
+        def boom(src, dst):
+            raise AssertionError
+
+        req = {"id": "9", "op": "convert", "input": self.inp, "output": self.out, "model": "silvio"}
+        with mock.patch.dict(os.environ, {"STUDIO_RVC_FAKE": "1"}), mock.patch.object(w, "fake_infer", boom), \
+                mock.patch("shutil.disk_usage", return_value=mock.Mock(free=0)), \
+                contextlib.redirect_stderr(io.StringIO()):
+            resp = w.handle(req)
+        self.assertEqual(resp, {"id": "9", "ok": False, "erro": "Disco cheio — libere espaço"})
+        self.assertEqual(os.listdir(self.dir), ["audio.wav"])       # nem .rvc_* nem .part.wav
+
+    def test_soundfileerror_from_run_infer_on_full_disk_is_disco_cheio(self):
+        def boom(src, dst):
+            raise sf.LibsndfileError(2, f"Error opening '{dst}': ")
+
+        req = {"id": "9", "op": "convert", "input": self.inp, "output": self.out, "model": "silvio"}
+        with mock.patch.dict(os.environ, {"STUDIO_RVC_FAKE": "1"}), mock.patch.object(w, "fake_infer", boom), \
+                mock.patch("shutil.disk_usage", return_value=mock.Mock(free=0)), \
+                contextlib.redirect_stderr(io.StringIO()):
+            resp = w.handle(req)
+        self.assertEqual(resp, {"id": "9", "ok": False, "erro": "Disco cheio — libere espaço"})
+        self.assertEqual(os.listdir(self.dir), ["audio.wav"])       # nem .rvc_* nem .part.wav
+
+    def test_same_exceptions_with_free_disk_are_not_masked_as_disco_cheio(self):
+        def boom(src, dst):
+            raise AssertionError
+
+        req = {"id": "9", "op": "convert", "input": self.inp, "output": self.out, "model": "silvio"}
+        with mock.patch.dict(os.environ, {"STUDIO_RVC_FAKE": "1"}), mock.patch.object(w, "fake_infer", boom), \
+                mock.patch("shutil.disk_usage", return_value=mock.Mock(free=50 * 1024**3)), \
+                contextlib.redirect_stderr(io.StringIO()):
+            resp = w.handle(req)
+        self.assertEqual(resp, {"id": "9", "ok": False, "erro": "Falha no conversor: AssertionError: "})
+        self.assertEqual(os.listdir(self.dir), ["audio.wav"])       # nem .rvc_* nem .part.wav
+
+
 if __name__ == "__main__":
     unittest.main()

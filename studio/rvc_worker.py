@@ -164,7 +164,13 @@ def convert_pieces(x: np.ndarray, sr: int, cuts: list[float], work: str, run_inf
         ca, cb = max(0.0, a - CTX_S), min(total_s, b + CTX_S)
         src, dst = os.path.join(work, f"p{i:03d}.wav"), os.path.join(work, f"p{i:03d}_out.wav")
         write_wav(src, x[int(round(ca * sr)):int(round(cb * sr))], sr)
-        run_infer(src, dst)
+        try:
+            run_infer(src, dst)
+        except (AssertionError, sf.SoundFileError):
+            # o Applio nao trata o disco cheio: o sf.write cru dele levanta essas excecoes direto
+            if disk_full(work):
+                raise ConvertError(MSG_DISK_FULL) from None
+            raise
         if not os.path.isfile(dst):
             # o Applio so imprime o erro (ex.: disco cheio) e volta sem gravar a saida
             raise ConvertError(MSG_DISK_FULL if disk_full(work) else
