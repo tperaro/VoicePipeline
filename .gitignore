@@ -10,6 +10,7 @@ tts_tests/
 recordings/
 videos_finais/
 estado.json
+estado.json.corrompido
 *.log
 
 # Mídia em qualquer lugar

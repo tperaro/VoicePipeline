@@ -112,7 +112,7 @@ não mexe no `estado.json`.
 ### 5. Conferir
 
 Grave uma tomada nova **com vídeo** falando, converta e assista ao vídeo. O novo offset vale para os vídeos gerados
-daqui em diante. Um vídeo antigo só muda se você clicar **Gerar vídeo** com a tomada dele aberta.
+daqui em diante; os que já estão em `videos_finais/` não mudam.
 
 ### Confiança e outras observações
 
@@ -196,6 +196,9 @@ No terminal (troque pelos valores do passo 2.6):
 rclone config create iavoz drive client_id=SEU_CLIENT_ID client_secret=SUA_CHAVE_SECRETA scope=drive
 ```
 
+- **A saída do comando termina mostrando a configuração do remote, inclusive o `token` (com o `refresh_token`,
+  que dá acesso ao seu Drive). Não copie nem compartilhe essa saída, nem em print.** Para mostrar a configuração a
+  alguém, use `rclone config redacted` (veja "Segurança e onde fica o token").
 - O navegador abre sozinho. Escolha a conta, clique em **Avançado → Acessar Voice Studio (não seguro)**
   ("Advanced → Go to … (unsafe)") e permita o acesso ao Drive. O comando termina quando a página mostrar
   "Success".
@@ -257,7 +260,7 @@ python3 enviar_drive.py --arquivo videos_finais/2026-09-26_101500_silvio_IA.mp4
 |---|---|
 | rclone não instalado — veja o README | Passo 1. |
 | Drive não configurado — rode a configuração | Passo 3 (o remote `iavoz` não existe). |
-| Login do Drive expirou — clique Reconectar | No app: **Reconectar** (abre o navegador). No terminal: `rclone config reconnect iavoz:`. Se acontece toda semana, o app ficou em "Teste": faça o passo 2.7. |
+| Login do Drive expirou — clique Reconectar | No app: **Reconectar** (abre o navegador). No terminal: `rclone config reconnect iavoz:` (a saída pode mostrar o token: não copie nem compartilhe, nem em print). Se acontece toda semana, o app ficou em "Teste": faça o passo 2.7. |
 | Essa conta Google não tem acesso a essa pasta (ou o link está errado) | Confira o link (passo 4) e se a pasta foi compartilhada com **edição** com a conta usada no passo 3. |
 | Seu Drive está cheio — os envios contam na sua cota | Os vídeos contam na cota da **sua** conta (15 GB grátis, ~45 MB por minuto de vídeo), não na do dono da pasta. |
 | Falha no envio (código N) + últimas linhas do log | Erro de rede ou do Google; tente de novo mais tarde. |
