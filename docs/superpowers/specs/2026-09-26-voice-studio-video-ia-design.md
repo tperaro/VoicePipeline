@@ -1,7 +1,8 @@
 # Voice Studio v2 — vídeo da webcam com voz trocada por IA, marca d'água e envio pro Drive
 
 - **Data:** 2026-09-26
-- **Status:** aprovada em 26/09/2026. Emendada no mesmo dia depois da revisão do plano de implementação (ver seção 15)
+- **Status:** aprovada em 26/09/2026. Emendada no mesmo dia depois da revisão do plano de implementação e em
+  27/09/2026 depois da execução (ver seção 15)
 - **Evidência:** os testes feitos nesta máquina (webcam, microfone, GPU, modelo silvio_350e) estão em
   `docs/superpowers/probes/2026-09-26/`. Os relatórios completos ficam em `relatorios/`.
   Marcação usada nesta spec: **[V]** = medido/rodado aqui; **[I]** = inferido (docs/código), não rodado.
@@ -27,7 +28,8 @@ O fluxo completo é:
 - A marca d'água aparece **em todos os frames**, e o aviso em texto **sobrevive a um corte vertical 9:16**
   centralizado (Reels, TikTok, Status).
 - Nenhum arquivo quebrado ou sem marca d'água chega em `videos_finais/` nem no Drive (*fail-closed*).
-- Rodar `enviar_drive.py` de novo não duplica nada no Drive, e ele nunca apaga nada lá.
+- Rodar `enviar_drive.py` de novo não duplica nada no Drive nem traz de volta o que o dono da pasta apagou ou
+  moveu (9.4), e ele nunca apaga nada lá.
 - Um travamento do app não deixa a câmera nem o microfone gravando escondidos.
 - O modo "só áudio" continua funcionando. As gravações antigas em `recordings/` não são tocadas.
 
@@ -123,6 +125,10 @@ studio.log                  log técnico (tracebacks, stderr resumido dos proces
 - Só a thread principal da GUI (ou a CLI) altera o `take.json`.
 - Um erro de conversão ou de vídeo fica **por modelo**, em `saidas[<modelo>]["erro"]`, e um sucesso posterior o
   apaga. O status `"falhou"` fica reservado para a gravação (ou para o áudio ilegível de uma tomada recuperada).
+- Uma conversão nova tira `mp4` e `erro` de `saidas[<modelo>]`, porque o vídeo antigo tem a voz anterior, mas
+  **mantém** `enviado`: ele descreve o arquivo que já está no Drive, e o `enviar_drive.py` usa o MD5 dele para não
+  reenviar (9.4). O render seguinte grava o `mp4` novo e tira o `enviado`, porque o arquivo mudou. O app só
+  mostra "Enviado em …" quando existe `mp4`.
 - Se o `take.json` não puder ser gravado (ex.: disco cheio), a mudança é desfeita na memória e nada segue.
 
 ## 4. Configuração
@@ -143,6 +149,7 @@ studio.log                  log técnico (tracebacks, stderr resumido dos proces
   - `gravar_video`
   - `drive_pasta` (link)
   - `av_offset_ms` (default 0, sem controle na GUI)
+  - `modelo` (o último escolhido na GUI; default `orochi`)
 
 ## 5. Captura
 
@@ -205,6 +212,8 @@ studio.log                  log técnico (tracebacks, stderr resumido dos proces
    - O microfone está em `pactl list short sources`, sem os `.monitor`.
    - O nó da câmera existe.
    - Há pelo menos 2 GB livres.
+   - Essas três checagens ficam num lugar só (`capture.preflight`), usado pelo app e pelo teste real. O painel
+     acrescenta só as que são dele: duração, mínimo de 1 s, microfone vazio e "Gravar vídeo" sem câmera.
 2. **Processo:** `Popen` na **thread principal**, com:
    - `stdin=PIPE`, `stdout=PIPE`;
    - `stderr` indo para o arquivo `recordings/<id>/ffmpeg.log` (nunca um pipe);
@@ -246,6 +255,9 @@ studio.log                  log técnico (tracebacks, stderr resumido dos proces
    envia SIGKILL.
 3. Os códigos 0, 255 e 224 são aceitos. O **sucesso** é decidido pelo `ffprobe`: os dois streams existem e a
    duração é maior que 0.
+   - Se o alinhamento do áudio (6.3) falhar depois disso (ex.: disco cheio), a tomada continua "gravado": o
+     motivo vai para o log e o `audio.wav` é preparado de novo ao converter. Assim o `raw.mkv` bom não some da
+     abertura seguinte.
 4. O resultado volta para a GUI pela fila de eventos.
 5. Depois roda o `volumedetect`, como o app já faz. Se `max_volume` for menor que −45 dB, o app mostra
    "Microfone mudo?".
@@ -263,7 +275,11 @@ studio.log                  log técnico (tracebacks, stderr resumido dos proces
 
 - O 1º frame MJPEG costuma vir truncado ("EOI missing" em 11 de 30 logs [V]).
 - Por isso a âncora é o pts do **2º pacote** de vídeo (`ancora_pts`).
-- No render, o vídeo começa nesse frame (`trim=start_frame=1`).
+- No render, o vídeo começa nesse frame **pelo pts**: `-copyts` e `trim=start=<ancora_pts − 0,5 ms>` (os pts do
+  MKV são em ms). Assim o 1º frame do MP4 é a âncora mesmo quando o 1º pacote não decodifica ("No JPEG data
+  found"). O `trim=start_frame=1` contava frames decodificados: nesse caso o MP4 começava no 3º pacote, com o
+  vídeo um frame da câmera adiantado (67 ms a 15 fps), e a verificação (8.3) não percebia [V: MKV sintético].
+- O `audio.wav` (6.3) e a calibração (6.4) usam o mesmo relógio: pts − `ancora_pts`.
 
 ### 6.2 Ajuste do relógio do microfone (`timeline.fit_audio_clock`)
 
@@ -308,8 +324,25 @@ studio.log                  log técnico (tracebacks, stderr resumido dos proces
 - É aplicada **no render**, então mudar o valor não exige converter de novo. O render lê o valor do
   `estado.json` no clique, então calibrar com o app aberto funciona.
 - Valor positivo = áudio mais tarde.
-- A calibração é feita uma vez com palmas diante da câmera: mediana de pelo menos 5 palmas, de preferência
-  com boa luz, porque a 15 fps a precisão é ±33 ms.
+- A calibração é feita uma vez com palmas diante da câmera (`calibrar_av.py`): mediana de pelo menos 5 palmas, de
+  preferência com boa luz, porque a 15 fps a precisão é ±33 ms.
+- **Contato das mãos no vídeo:** é a parada que fecha a **aproximação**, isto é, a 1ª corrida de movimento da
+  janela da palma com pelo menos 30 % do maior movimento dela. Não é o maior pico: quando as mãos se afastam tão
+  rápido quanto se juntam, o maior pico é a separação. Uma corrida que já vinha de antes do meio do caminho desde
+  a palma anterior é a separação da anterior e não conta.
+- **Jeito de bater palmas** (o README ensina): cada palma começa com as mãos afastadas e paradas; depois do
+  contato, as mãos se afastam devagar; uns 2 s entre palmas, com as mãos afastadas e paradas até a próxima, nunca
+  descansando juntas.
+- **Confiança:**
+  - "baixa" com menos de 5 palmas vistas, dispersão (MAD) acima de 15 ms ou menos de 80 % das palmas a até
+    max(15 ms, 1 frame) da mediana;
+  - "média" só quando a câmera está abaixo de 20 fps;
+  - "alta" nos outros casos.
+  - Um offset acima de 200 ms só gera aviso e não muda a confiança: um atraso real desse tamanho pode existir.
+- **`--salvar`:** grava só o `av_offset_ms`, por mescla (seção 4). Recusa com menos de 5 palmas ou com confiança
+  "baixa", sem mexer no `estado.json`.
+- **Limite conhecido:** quem "abre e bate" a partir das mãos juntas pode receber um offset errado com confiança
+  alta. A conferência final é assistir a uma tomada nova com vídeo.
 
 ## 7. Conversão (RVC)
 
@@ -381,10 +414,10 @@ studio.log                  log técnico (tracebacks, stderr resumido dos proces
 
 ```python
 ["setpriv", "--pdeathsig", "TERM", "--", "nice", "-n", "10",
- "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+ "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-copyts",
  "-i", RAW_MKV, "-i", CONV_WAV, "-i", WM_PNG,
  "-filter_complex",
-   "[0:v]trim=start_frame=1,setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=2,"
+   "[0:v]trim=start={INICIO},setpts=PTS-STARTPTS,fps=30,tpad=stop_mode=clone:stop=2,"
    "trim=end_frame={N},setpts=PTS-STARTPTS,format=yuv420p[v0];"
    "[2:v]format=yuva420p[wm];[v0][wm]overlay=0:0:format=yuv420,format=yuv420p[v];"
    "[1:a]aresample=48000:resampler=soxr,asetpts=N/SR/TB{OFFSET},"
@@ -403,6 +436,8 @@ studio.log                  log técnico (tracebacks, stderr resumido dos proces
 - **Número de frames:** `N = round((pts_último + dur_último − ancora_pts) · 30)`, calculado com os pacotes do
   `ffprobe`, sem decodificar. O cabeçalho diz 30 fps mesmo quando a câmera entrega 15. O DURATION do MKV não
   serve [V].
+- **`{INICIO}`:** `ancora_pts − 0,0005`, com 6 casas (6.1). O `-copyts` vem antes do 1º `-i`: sem ele o ffmpeg
+  zera o início do arquivo, e o pts que o `trim` vê deixa de ser o do `ffprobe`.
 - **Amostras de áudio:** `S = N · 1600`.
 - **`{OFFSET}`:** vazio quando `av_offset_ms == 0`. Caso contrário vira `,adelay=<n>S:all=1` ou
   `,atrim=start_sample=<n>`.
@@ -424,8 +459,10 @@ Antes do `os.replace(render.part.mp4 → videos_finais/<id>_<modelo>_IA.mp4)`, o
 2. A duração do áudio fica a até 1 frame da duração do vídeo.
 3. O `comment` contém "IA", e `title` e `description` existem.
 4. **Pixels da marca:** o app decodifica os frames 0, N/2 e N−1. Nos pixels em que o PNG tem texto branco
-   opaco, a luminância de saída precisa ser maior que 200 em pelo menos 95 % deles. Na área da faixa, ela
-   precisa ser menor que a da imagem-fonte.
+   opaco, a luminância de saída precisa ser maior que 200 em pelo menos 95 % deles. Na área da faixa (só o fundo,
+   fora do texto), o percentil 95 da luminância precisa ser menor que 140. É um limite absoluto, e não uma
+   comparação com a imagem-fonte: 55 % de preto sobre uma fonte clara dá ≤ 115. Quem garante o *fail-closed* é
+   o texto, que um vídeo sem marca não passa; a faixa é uma checagem secundária.
 
 Se qualquer item falhar, o `.part` fica em `recordings/<id>/`, o erro vai para `saidas[<modelo>]["erro"]` (ver
 3.2) e o motivo aparece em PT-BR. **Não existe caminho de código que renderize sem a sobreposição.**
@@ -453,6 +490,9 @@ Se qualquer item falhar, o `.part` fica em `recordings/<id>/`, o erro vai para `
    - `scope=drive` é obrigatório. `drive.file` não escreve numa pasta que o app não criou [V: docs].
 4. **Link da pasta:** colado na GUI em "Configurar Drive" ou passado com `enviar_drive.py --pasta <link>`.
    - Fica salvo em `estado.json`.
+   - O **Enviar** do app relê o link do `estado.json` no clique, como o `av_offset_ms` (6.4): trocar a pasta com
+     `enviar_drive.py --pasta` com o app aberto vale no envio seguinte. Com o arquivo corrompido ou sem link,
+     fica o link da memória.
    - O parser aceita `/folders/<ID>`, `/u/N/folders/`, `open?id=`, `folderview?id=`, `resourcekey` e o ID puro
      (12 casos [V]).
    - Rejeita links `/file/d/` e hosts que não são do Google.
@@ -510,8 +550,15 @@ Se qualquer item falhar, o `.part` fica em `recordings/<id>/`, o erro vai para `
 
 ### 9.4 CLI `enviar_drive.py`
 
-- `enviar_drive.py [--pasta LINK] [--arquivo CAMINHO] [--dry-run]`.
-- Sem `--arquivo`, envia todos os `videos_finais/*_IA.mp4`. Os que já estão iguais no Drive são pulados.
+- `enviar_drive.py [--pasta LINK] [--arquivo CAMINHO] [--dry-run] [--reenviar]`.
+- Sem `--arquivo`, envia os `videos_finais/*_IA.mp4` que ainda não foram enviados. A decisão vem do **histórico
+  local**, não do que está hoje na pasta: um vídeo cujo `take.json` registra `saidas[<modelo>].enviado.md5`
+  igual ao MD5 do arquivo aparece como "pulado (já enviado antes)" e nem chama o rclone. Assim o cron não
+  duplica nem traz de volta o que o dono da pasta apagou, moveu ou renomeou. Os que já estão iguais no Drive
+  também são pulados (pelo `copyto`).
+- `--reenviar` ignora esse histórico. `--arquivo` é explícito e sempre envia, mesmo que o envio já esteja
+  registrado.
+- Depois de cada envio verificado, a CLI anota o `enviado` no `take.json` da tomada (3.2).
 - Mostra progresso e um resumo no fim (enviados, pulados, falhas).
 - Sai com código diferente de 0 se algum envio falhar.
 - Pode ir para o cron.
@@ -569,7 +616,8 @@ Se qualquer item falhar, o `.part` fica em `recordings/<id>/`, o erro vai para `
 - **Quem faz o spawn:**
   - O Recorder, o PreviewOnly e o worker do RVC nascem na thread principal.
   - O render, o ffprobe e o rclone nascem na mesma thread que espera por eles.
-- Todo ffmpeg que não é o gravador recebe `-nostdin` e `stdin=DEVNULL`.
+- Todo ffmpeg que não é de captura (gravador ou preview) recebe `-nostdin` e `stdin=DEVNULL`. Os de captura
+  mantêm o `stdin` aberto para parar com `q` (5.2 e 5.5).
 - O render roda com `nice 10`.
 
 ## 12. Testes
@@ -581,7 +629,7 @@ stdlib também rodam com `python3`.
 |---|---|
 | watermark | Tamanho do PNG = tamanho pedido (720p, 480p, 600p). Todo pixel de texto opaco fica na coluna 9:16. O texto muda por modelo. Recusa modelo sem aviso. |
 | timeline | Ajuste sobre as **tabelas reais** `deriva-mic/*.framemd5` (deriva ≈ +48,6 e −56,1 ppm). Tomada sintética (lavfi) com áudio 0,40 s atrasado e 0,25 s adiantado → bip na amostra do flash (≤ 1 ms). Buraco de 0,5 s → caminho async. |
-| render | Tomada sintética flash+bip → MP4 com offset ≤ 1 frame. Duração do áudio = duração do vídeo. Tags presentes. `av_offset_ms` desloca o áudio corretamente. Verificação falha → `.part` não é movido. PNG com tamanho errado → recusa. |
+| render | Tomada sintética flash+bip → MP4 com offset ≤ 1 frame, inclusive a 15 fps com o 1º pacote MJPEG que não decodifica. Duração do áudio = duração do vídeo. Tags presentes. `av_offset_ms` desloca o áudio corretamente. Verificação falha → `.part` não é movido. PNG com tamanho errado → recusa. |
 | capture | Montagem dos comandos (mic primeiro, flags obrigatórias, sem `-t`). Mapa de códigos de saída. Protocolo de parada com um **ffmpeg falso** (script que ignora `q`, trava o stdout etc.). Leitura de frames com leitura parcial. |
 | rvc | Protocolo do worker com um conversor falso (identidade). Matemática dos pedaços: saída remontada == entrada, fora do crossfade. Mensagens de stdout do "Applio" não quebram o protocolo. |
 | drive | Parser de link (12 casos). Comandos do rclone. Leitura do log JSON. Mapa de erros. Trava. Checagem *fail-closed*. Tudo com um **rclone falso** no PATH. |
@@ -638,3 +686,25 @@ aplicadas no texto acima; esta lista só registra o que mudou em relação à ve
 - **Pasta do Drive de destino:** `https://drive.google.com/drive/folders/<ID_DA_PASTA>`. É
   de outra conta, compartilhada com `<sua conta Google>`, que é a conta do login OAuth do rclone. O
   link vai no `estado.json`, não no código.
+
+### Emendas depois da execução (27/09/2026)
+
+As 12 tasks foram executadas e revisadas, e a revisão final pediu correções. Estas emendas registram as decisões
+tomadas nesse caminho; o texto das seções citadas já está atualizado:
+
+- **1 e 9.4 (Task 8):** sem `--arquivo`, o `enviar_drive.py` pula o que o `take.json` já registra como enviado
+  (mesmo MD5), sem chamar o rclone; `--reenviar` força; `--arquivo` sempre envia.
+- **3.2 (Task 11):** uma conversão nova tira `mp4` e `erro` da saída do modelo e mantém `enviado`; "Enviado em …"
+  só aparece quando existe `mp4`.
+- **4 (Task 1):** campo `modelo` no `estado.json`.
+- **5.4 (Task 10):** as checagens antes de gravar ficam numa fonte só (`capture.preflight`).
+- **5.5 (revisão final):** o alinhamento que falha depois de a gravação passar na verificação não a marca
+  "falhou"; o `audio.wav` sai de novo ao converter.
+- **6.1 e 8.2 (revisão final):** o render corta o vídeo pelo pts da âncora (`-copyts` +
+  `trim=start=ancora_pts − 0,5 ms`), não pelo índice do frame decodificado.
+- **6.4 (Task 12):** contato = parada que fecha a aproximação; jeito de bater palmas; regras de confiança; o
+  `--salvar` recusa confiança "baixa"; limite do "abre e bate".
+- **8.3 (Task 5):** a faixa é conferida com um limite absoluto (percentil 95 < 140), não contra a imagem-fonte.
+- **9.1 (revisão final):** o Enviar do app relê o link da pasta no `estado.json` no clique.
+- **11 (Task 6):** `-nostdin` e `stdin=DEVNULL` em todo ffmpeg que não é de captura (gravador ou preview).
+- **12 (revisão final):** o teste de render cobre o 1º pacote MJPEG que não decodifica.
