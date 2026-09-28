@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
 Name=Voice Studio (Orochi/Silvio)
-Comment=Grava, ajusta volume e converte pra voz do Orochi ou do Silvio Santos
+Comment=Grava webcam e voz, troca a voz por IA (Orochi ou Silvio Santos) e gera vídeo com marca d'água
 # Ajuste o caminho abaixo para onde o repo foi clonado
-Exec=/CAMINHO/PARA/VoicePipeline/app/iniciar_voice_studio.sh
+Exec=/CAMINHO/PARA/VoicePipeline/iniciar_orochi_studio.sh
 Icon=audio-input-microphone
 Terminal=false
 Categories=AudioVideo;Audio;

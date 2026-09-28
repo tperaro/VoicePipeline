@@ -1,16 +1,21 @@
 # VoicePipeline
 
-Pipeline de clonagem de voz com RVC ([Applio](https://github.com/IAHispano/Applio)) para duas vozes, **Orochi** e **Silvio Santos**, mais o **Voice Studio**, um app desktop (Tkinter) para gravar sua voz, aumentar o volume e converter para uma das vozes treinadas.
+Pipeline de clonagem de voz com RVC ([Applio](https://github.com/IAHispano/Applio)) para duas vozes, **Orochi** e **Silvio Santos**, mais o **Voice Studio**, um app desktop (Tkinter) que grava a webcam e o microfone, troca a sua voz por uma das vozes treinadas e gera um vídeo com marca d'água avisando que a voz é gerada por IA, com envio opcional para uma pasta do Google Drive.
 
 Projeto pessoal de homenagem, sem fins comerciais. Respeite os [termos de uso do Applio](https://github.com/IAHispano/Applio/blob/main/TERMS_OF_USE.md) e não use as vozes para enganar ninguém nem se passar por essas pessoas.
 
 ## Estrutura
 
 ```
-app/
-  voice_studio.py            # app: modelo -> gravar -> volume -> converter
-  iniciar_voice_studio.sh    # abre o app com o venv do Applio
-  voice-studio.desktop       # atalho de desktop (ajuste o caminho)
+orochi_studio.py             # app: gravar -> converter -> vídeo com marca d'água -> enviar
+iniciar_orochi_studio.sh     # abre o app com o venv do Applio
+voice-studio.desktop         # atalho de desktop (ajuste o caminho)
+studio/                      # módulos do app (captura, RVC, render, marca d'água, Drive, estado)
+calibrar_av.py               # mede o atraso áudio/vídeo com palmas (av_offset_ms)
+enviar_drive.py              # envia os vídeos prontos para o Drive (rclone)
+run_tests.sh                 # testes do app (unittest, com o python do venv do Applio)
+tests/                       # testes + fixtures + ffmpeg/rclone falsos
+docs/superpowers/            # spec, plano e medições de hardware do modo vídeo
 pipeline/
   env.sh                     # caminhos compartilhados + commit fixo do Applio
   00_setup.sh                # instala o Applio, as dependências e liga os modelos
@@ -30,11 +35,11 @@ models/                      # modelos finais (Git LFS)
 training/                    # config.json, model_info.json e logs dos treinos originais
 ```
 
-O repo **não** inclui áudio bruto, stems, datasets, features extraídas, checkpoints intermediários, G/D de retomada de treino nem resultados de inferência. O pipeline recria tudo isso em `data/`, `Applio/logs/` e `recordings/`, que ficam no `.gitignore`.
+O repo **não** inclui áudio bruto, stems, datasets, features extraídas, checkpoints intermediários, G/D de retomada de treino nem resultados de inferência. O pipeline recria tudo isso em `data/`, `Applio/logs/` e `recordings/`, que ficam no `.gitignore`, assim como os vídeos prontos (`videos_finais/`) e as preferências do app (`estado.json`).
 
 ## Setup
 
-Requisitos: Linux, GPU NVIDIA (CUDA 12.8), `git`, `git-lfs`, [`uv`](https://docs.astral.sh/uv/), `ffmpeg`, `pulseaudio-utils` (`parecord`/`pactl`) e `python3-tk`.
+Requisitos: Linux, GPU NVIDIA (CUDA 12.8), `git`, `git-lfs`, [`uv`](https://docs.astral.sh/uv/), `ffmpeg`, `pulseaudio-utils` (`parecord`/`pactl`), `util-linux` (`setpriv`) e `python3-tk`. Para o modo vídeo, uma webcam V4L2; para o envio ao Drive, o rclone v1.75.1 (veja "Google Drive: configuração inicial").
 
 ```bash
 git lfs install
@@ -49,6 +54,9 @@ O `00_setup.sh` clona o Applio no commit `7b9f3fa` dentro de `Applio/`, cria o v
 
 Grava a webcam e o microfone, troca a voz por IA (RVC) e gera vídeos com marca d'água avisando que a voz é
 gerada por IA. Os vídeos prontos ficam em `videos_finais/` e podem ser enviados para uma pasta do Google Drive.
+
+O app usa o Applio em `Applio/`, na raiz do repo (onde o `00_setup.sh` instala), e o checkpoint com mais épocas em
+`Applio/logs/<voz>/`. Os testes rodam com `./run_tests.sh`.
 
 ## Como usar
 
