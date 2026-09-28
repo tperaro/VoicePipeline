@@ -253,3 +253,12 @@ events.out.tfevents.*
 # Local
 .env
 .env.*
+
+# Voice Studio: gerados pelo app (vídeo + Drive)
+videos_finais/
+estado.json
+estado.json.corrompido
+*.mp4
+*.mkv
+*.part
+*.part.*

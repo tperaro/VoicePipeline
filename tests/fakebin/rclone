@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""rclone FALSO para os testes: simula o Drive numa pasta local (nunca usa rede nem ~/.config).
+
+Ambiente:
+  FAKE_RCLONE_DRIVE   pasta que faz o papel do Drive; a pasta compartilhada e <DRIVE>/<folder_id>/
+  FAKE_RCLONE_MODE    ok | noconfig | invalid_grant | quota | fail | metadata_reject | hang
+  FAKE_RCLONE_LSJSON  ok | badmd5
+  FAKE_RCLONE_CALLS   arquivo onde cada chamada e anotada (uma linha JSON {"pid", "argv"})
+As mensagens imitam as do rclone v1.75.1 (probes/2026-09-26/relatorios/probe_drive-rclone.md).
+"""
+
+import hashlib
+import json
+import os
+import shutil
+import sys
+import time
+from datetime import datetime, timezone
+
+FORBIDDEN = {"sync", "move", "delete", "deletefile", "purge", "dedupe", "link", "--no-check-dest", "-vv",
+             "--config"}
+
+
+def log(json_log, level, msg, **extra):
+    if json_log:
+        entry = {"time": datetime.now(timezone.utc).isoformat(), "level": level, "msg": msg, **extra,
+                 "source": "fake"}
+        line = json.dumps(entry)
+    else:
+        line = f"2026/09/26 00:00:00 {level.upper()}: {msg}"
+    print(line, file=sys.stderr, flush=True)
+
+
+def stats(done, total, transfers):
+    log(True, "notice", f"\nTransferred: {done} / {total}\n",
+        stats={"bytes": done, "totalBytes": total, "transfers": transfers, "errors": 0})
+
+
+def opt(args, name):
+    return args[args.index(name) + 1] if name in args else None
+
+
+def die(json_log, rc, msg):
+    log(json_log, "critical", msg)
+    sys.exit(rc)
+
+
+def folder(args, json_log):
+    fid = opt(args, "--drive-root-folder-id")
+    if not fid:
+        die(json_log, 2, "fake rclone: falta --drive-root-folder-id")
+    return os.path.join(os.environ["FAKE_RCLONE_DRIVE"], fid)
+
+
+def remote_name(arg, json_log):
+    if not arg.startswith("iavoz:"):
+        die(json_log, 2, f"fake rclone: destino inesperado {arg}")
+    return arg[len("iavoz:"):]
+
+
+def same_file(src, dst):
+    if not os.path.exists(dst):
+        return False
+    a, b = os.stat(src), os.stat(dst)
+    return a.st_size == b.st_size and a.st_mtime_ns // 1_000_000 == b.st_mtime_ns // 1_000_000
+
+
+def copyto(args, mode, json_log):
+    src, name = args[1], remote_name(args[2], json_log)
+    root = folder(args, json_log)
+    if mode == "quota":
+        log(json_log, "error", "Received upload limit error: googleapi: Error 403: The user's Drive storage "
+                               "quota has been exceeded., storageQuotaExceeded")
+        die(json_log, 7, "Failed to copyto: fatal error encountered")
+    if mode == "fail":
+        log(json_log, "error", "Failed to copyto: googleapi: Error 500: Internal Error, backendError")
+        sys.exit(5)
+    if mode == "metadata_reject" and "--metadata-set" in args:
+        die(json_log, 1, "Failed to copyto: failed to set metadata: googleapi: Error 400: Invalid field")
+    if not os.path.isdir(root):
+        log(json_log, "error", "Failed to copyto: directory not found")
+        sys.exit(3)
+    dst = os.path.join(root, name)
+    size = os.path.getsize(src)
+    if same_file(src, dst):
+        stats(0, 0, 0)
+        sys.exit(9 if "--error-on-no-transfer" in args else 0)
+    if "--dry-run" in args:
+        log(json_log, "notice", f"Skipped copy as --dry-run is set (size {size})", skipped="copy", size=size,
+            object=name)
+        stats(size, size, 1)
+        sys.exit(0)
+    if mode == "hang":
+        deadline = time.monotonic() + 60   # rede de seguranca: nunca vira processo eterno
+        done = 0
+        while time.monotonic() < deadline:
+            done = min(size - 1, done + 1)
+            stats(done, size, 0)
+            time.sleep(0.05)
+        sys.exit(1)
+    existed = os.path.exists(dst)
+    stats(0, size, 0)
+    stats(size // 2, size, 0)
+    shutil.copyfile(src, dst + ".tmp")
+    os.replace(dst + ".tmp", dst)
+    st = os.stat(src)
+    os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))
+    if "--metadata-set" in args:
+        meta_dir = os.path.join(root, ".meta")
+        os.makedirs(meta_dir, exist_ok=True)
+        key, value = opt(args, "--metadata-set").split("=", 1)
+        with open(os.path.join(meta_dir, name + ".json"), "w", encoding="utf-8") as f:
+            json.dump({key: value}, f, ensure_ascii=False)
+    log(json_log, "info", "Copied (replaced existing)" if existed else "Copied (new)", size=size, object=name)
+    stats(size, size, 1)
+    sys.exit(0)
+
+
+def lsjson(args, json_log):
+    name = remote_name(args[1], json_log)
+    dst = os.path.join(folder(args, json_log), name)
+    if "--stat" not in args or not os.path.isfile(dst):
+        die(json_log, 3, "Failed to lsjson: directory not found")
+    with open(dst, "rb") as f:
+        md5 = hashlib.md5(f.read()).hexdigest()
+    if os.environ.get("FAKE_RCLONE_LSJSON") == "badmd5":
+        md5 = "0" * 32
+    info = {"Path": name, "Name": name, "Size": os.path.getsize(dst), "MimeType": "video/mp4",
+            "ModTime": "2026-09-26T01:14:20.218776181-03:00", "IsDir": False, "Hashes": {"md5": md5},
+            "ID": "fake-" + md5[:12]}
+    print(json.dumps(info, indent="\t"))
+    sys.exit(0)
+
+
+def main():
+    args = sys.argv[1:]
+    calls = os.environ.get("FAKE_RCLONE_CALLS")
+    if calls:
+        with open(calls, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"pid": os.getpid(), "argv": args}) + "\n")
+    json_log = "--use-json-log" in args
+    print("linha de texto antes do log JSON", file=sys.stderr, flush=True)   # o parser tem que ignorar
+    bad = FORBIDDEN.intersection(args)
+    if bad or not args:
+        die(json_log, 2, f"fake rclone: comando/flag proibido {sorted(bad)}")
+    mode = os.environ.get("FAKE_RCLONE_MODE", "ok")
+    if mode == "noconfig":
+        die(json_log, 1, 'Failed to create file system for destination "iavoz:": didn\'t find section in '
+                         'config file ("iavoz")')
+    if mode == "invalid_grant":
+        die(json_log, 1, 'Failed to create file system for "iavoz:": couldn\'t fetch token: invalid_grant: '
+                         'maybe token expired? - try refreshing with "rclone config reconnect iavoz:"')
+    if args[0] == "copyto":
+        copyto(args, mode, json_log)
+    elif args[0] == "lsjson":
+        lsjson(args, json_log)
+    die(json_log, 2, f"fake rclone: comando nao suportado {args[0]}")
+
+
+if __name__ == "__main__":
+    main()
